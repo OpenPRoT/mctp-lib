@@ -163,7 +163,7 @@ impl<S: Sender> Router<S> {
         tag: Option<Tag>,
         ic: MsgIC,
         cookie: AppCookie,
-        bufs: &[&[u8]],
+        buf: &[u8],
     ) -> Result<Tag> {
         let Some(eid) = eid.or(self.lookup_request(cookie).map(|r| r.eid)) else {
             return Err(Error::InvalidInput);
@@ -178,6 +178,25 @@ impl<S: Sender> Router<S> {
             Some(cookie),
         )?;
 
+        self.sender.send(frag, buf)
+    }
+
+    /// Send a vectored message
+    ///
+    /// When responding to a request received by a listener, `eid` and `tag` have to be set.
+    /// A request usually won't set a `eid`.
+    /// When no `tag` is supplied for a request, a new one will be allocated.
+    ///
+    /// The `bufs` will be copied to a new buffer with `MAX_PAYLOAD` size.
+    pub fn send_vectored(
+        &mut self,
+        eid: Option<Eid>,
+        typ: MsgType,
+        tag: Option<Tag>,
+        ic: MsgIC,
+        cookie: AppCookie,
+        bufs: &[&[u8]],
+    ) -> Result<Tag> {
         let mut local_buffer = [0; mctp_estack::config::MAX_PAYLOAD];
 
         let payload = if bufs.len() == 1 {
@@ -197,7 +216,7 @@ impl<S: Sender> Router<S> {
         // TODO: this seems unnecessary,
         // the fragmenter should iterate over the bufs requiring only a single packet buffer.
 
-        self.sender.send(frag, payload)
+        self.send(eid, typ, tag, ic, cookie, payload)
     }
 
     /// Receive a message associated with a [`AppCookie`]
