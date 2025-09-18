@@ -125,6 +125,9 @@ impl<S: Sender> Router<S> {
     }
 
     /// Allocate a new listener for [`typ`](MsgType)
+    ///
+    /// Returns an [AppCookie] when successful, [AddrInUse](mctp::Error::AddrInUse) when a listener for `typ` already exists,
+    /// [NoSpace](mctp::Error::NoSpace) when all listener slots are occupied.
     pub fn listener(&mut self, typ: MsgType) -> Result<AppCookie> {
         if self.listeners.iter().any(|x| x == &Some(typ)) {
             return Err(mctp::Error::AddrInUse);
@@ -148,15 +151,23 @@ impl<S: Sender> Router<S> {
         self.stack.set_eid(eid.0)
     }
 
+    /// Send a message
+    ///
+    /// When responding to a request received by a listener, `eid` and `tag` have to be set.
+    /// A request usually won't set a `eid`.
+    /// When no `tag` is supplied for a request, a new one will be allocated.
     pub fn send(
         &mut self,
-        eid: Eid,
+        eid: Option<Eid>,
         typ: MsgType,
         tag: Option<Tag>,
         ic: MsgIC,
         cookie: AppCookie,
         bufs: &[&[u8]],
     ) -> Result<Tag> {
+        let Some(eid) = eid.or(self.lookup_request(cookie).map(|r| r.eid)) else {
+            return Err(Error::InvalidInput);
+        };
         let frag = self.stack.start_send(
             eid,
             typ,
@@ -220,6 +231,10 @@ impl<S: Sender> Router<S> {
             }
             Ok(())
         }
+    }
+
+    fn lookup_request(&self, cookie: AppCookie) -> Option<&ReqHandle> {
+        requests_index_from_cookie(cookie).and_then(|i| self.requests[i].as_ref())
     }
 }
 
