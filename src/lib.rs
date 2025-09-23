@@ -10,9 +10,6 @@ use mctp_estack::Stack;
 pub use mctp_estack::AppCookie;
 pub use mctp_estack::fragment::Fragmenter;
 
-pub const MAX_LISTENER_HANDLES: usize = 64;
-pub const MAX_REQUEST_HANDLES: usize = 64;
-
 #[derive(Debug)]
 struct ReqHandle {
     /// Destination EID
@@ -36,7 +33,7 @@ impl ReqHandle {
 ///
 /// Currently only a single port/bus is supported
 #[derive(Debug)]
-pub struct Router<S: Sender> {
+pub struct Router<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize> {
     stack: Stack,
     sender: S,
     /// listener handles
@@ -47,17 +44,19 @@ pub struct Router<S: Sender> {
     /// request handles
     ///
     /// The index is used to construct the AppCookie.
-    requests: [Option<ReqHandle>; MAX_REQUEST_HANDLES],
+    requests: [Option<ReqHandle>; MAX_REQ_HANDLES],
 }
 
-impl<S: Sender> Router<S> {
+impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
+    Router<S, MAX_LISTENER_HANDLES, MAX_REQ_HANDLES>
+{
     pub fn new(own_eid: Eid, now_millis: u64, outbound: S) -> Self {
         let stack = Stack::new(own_eid, now_millis);
         Router {
             stack,
             sender: outbound,
             listeners: [None; MAX_LISTENER_HANDLES],
-            requests: [const { None }; MAX_REQUEST_HANDLES],
+            requests: [const { None }; MAX_REQ_HANDLES],
         }
     }
 
@@ -85,7 +84,7 @@ impl<S: Sender> Router<S> {
             Tag::Unowned(_) => {
                 // check for matching requests
                 if let Some(cookie) = msg.cookie() {
-                    if requests_index_from_cookie(cookie)
+                    if Self::requests_index_from_cookie(cookie)
                         .is_some_and(|i| self.requests[i].is_some())
                     {
                         msg.retain();
@@ -101,7 +100,7 @@ impl<S: Sender> Router<S> {
                 // check for matching listeners and retain with cookie
                 for i in 0..self.listeners.len() {
                     if self.listeners[i] == Some(msg.typ) {
-                        msg.set_cookie(Some(listener_cookie_from_index(i)));
+                        msg.set_cookie(Some(Self::listener_cookie_from_index(i)));
                         msg.retain();
                         return Ok(());
                     }
@@ -118,7 +117,7 @@ impl<S: Sender> Router<S> {
         for (index, handle) in self.requests.iter_mut().enumerate() {
             if handle.is_none() {
                 let _ = handle.insert(ReqHandle::new(eid));
-                return Ok(req_cookie_from_index(index));
+                return Ok(Self::req_cookie_from_index(index));
             }
         }
         Err(mctp::Error::NoSpace)
@@ -135,7 +134,7 @@ impl<S: Sender> Router<S> {
         for (index, handle) in self.listeners.iter_mut().enumerate() {
             if handle.is_none() {
                 let _ = handle.insert(typ);
-                return Ok(listener_cookie_from_index(index));
+                return Ok(Self::listener_cookie_from_index(index));
             }
         }
         Err(mctp::Error::NoSpace)
@@ -231,14 +230,14 @@ impl<S: Sender> Router<S> {
     /// This has to be called to free the request/listener slot.
     /// Returns [BadArgument](Error::BadArgument) for cookies that are malformed or non existent.
     pub fn unbind(&mut self, cookie: AppCookie) -> Result<()> {
-        if cookie_is_listener(&cookie) {
-            self.listeners[listeners_index_from_cookie(cookie).ok_or(Error::BadArgument)?]
+        if Self::cookie_is_listener(&cookie) {
+            self.listeners[Self::listeners_index_from_cookie(cookie).ok_or(Error::BadArgument)?]
                 .take()
                 .ok_or(Error::BadArgument)?;
             Ok(())
         } else {
             let req = self.requests
-                [requests_index_from_cookie(cookie).ok_or(Error::BadArgument)?]
+                [Self::requests_index_from_cookie(cookie).ok_or(Error::BadArgument)?]
             .take()
             .ok_or(Error::BadArgument)?;
             if let ReqHandle {
@@ -253,7 +252,61 @@ impl<S: Sender> Router<S> {
     }
 
     fn lookup_request(&self, cookie: AppCookie) -> Option<&ReqHandle> {
-        requests_index_from_cookie(cookie).and_then(|i| self.requests[i].as_ref())
+        Self::requests_index_from_cookie(cookie).and_then(|i| self.requests[i].as_ref())
+    }
+
+    /// Function to create a router unique AppCookie for listeners
+    ///
+    /// Currently the listeners are just the index ranging from 0 to LISTENER_HANDLES-1.
+    /// Requests are enumerated from LISTENER_HANDLES to LISTENER_HANDLES+REQUEST_HANDLES-1
+    fn listener_cookie_from_index(i: usize) -> AppCookie {
+        debug_assert!(
+            i < MAX_LISTENER_HANDLES,
+            "tried to create out of range listener AppCookie!"
+        );
+        AppCookie(i)
+    }
+
+    /// Function to create a router unique AppCookie for requests
+    ///
+    /// Currently the listeners are just the index ranging from 0 to LISTENER_HANDLES-1.
+    /// Requests are enumerated from LISTENER_HANDLES to LISTENER_HANDLES+REQUEST_HANDLES-1
+    fn req_cookie_from_index(i: usize) -> AppCookie {
+        debug_assert!(
+            i < MAX_REQ_HANDLES,
+            "tried to create out of range request AppCookie!"
+        );
+        AppCookie(i + MAX_LISTENER_HANDLES)
+    }
+
+    /// Get the listeners array index from a AppCookie
+    ///
+    /// Returns `None` for invalid cookies.
+    fn listeners_index_from_cookie(cookie: AppCookie) -> Option<usize> {
+        if cookie.0 < MAX_LISTENER_HANDLES {
+            Some(cookie.0)
+        } else {
+            None
+        }
+    }
+
+    /// Get the requesters array index from a AppCookie
+    ///
+    /// Returns `None` for invalid cookies.
+    fn requests_index_from_cookie(cookie: AppCookie) -> Option<usize> {
+        if cookie.0 >= MAX_LISTENER_HANDLES && cookie.0 < (MAX_LISTENER_HANDLES + MAX_REQ_HANDLES) {
+            Some(cookie.0 - MAX_LISTENER_HANDLES)
+        } else {
+            None
+        }
+    }
+
+    /// Check if a cookie is a corresponding to a listener
+    ///
+    /// Checks based on the contained id.
+    /// Returns false for request cookies.
+    fn cookie_is_listener(cookie: &AppCookie) -> bool {
+        cookie.0 < MAX_LISTENER_HANDLES
     }
 }
 
@@ -262,60 +315,6 @@ pub trait Sender {
     fn send(&mut self, fragmenter: Fragmenter, payload: &[u8]) -> Result<Tag>;
     /// Get the MTU of a MCTP packet fragment (without transport headers)
     fn get_mtu(&self) -> usize;
-}
-
-/// Function to create a router unique AppCookie for listeners
-///
-/// Currently the listeners are just the index ranging from 0 to LISTENER_HANDLES-1.
-/// Requests are enumerated from LISTENER_HANDLES to LISTENER_HANDLES+REQUEST_HANDLES-1
-fn listener_cookie_from_index(i: usize) -> AppCookie {
-    debug_assert!(
-        i < MAX_LISTENER_HANDLES,
-        "tried to create out of range listener AppCookie!"
-    );
-    AppCookie(i)
-}
-
-/// Function to create a router unique AppCookie for requests
-///
-/// Currently the listeners are just the index ranging from 0 to LISTENER_HANDLES-1.
-/// Requests are enumerated from LISTENER_HANDLES to LISTENER_HANDLES+REQUEST_HANDLES-1
-fn req_cookie_from_index(i: usize) -> AppCookie {
-    debug_assert!(
-        i < MAX_REQUEST_HANDLES,
-        "tried to create out of range request AppCookie!"
-    );
-    AppCookie(i + MAX_LISTENER_HANDLES)
-}
-
-/// Get the listeners array index from a AppCookie
-///
-/// Returns `None` for invalid cookies.
-fn listeners_index_from_cookie(cookie: AppCookie) -> Option<usize> {
-    if cookie.0 < MAX_LISTENER_HANDLES {
-        Some(cookie.0)
-    } else {
-        None
-    }
-}
-
-/// Get the requesters array index from a AppCookie
-///
-/// Returns `None` for invalid cookies.
-fn requests_index_from_cookie(cookie: AppCookie) -> Option<usize> {
-    if cookie.0 >= MAX_LISTENER_HANDLES && cookie.0 < (MAX_LISTENER_HANDLES + MAX_REQUEST_HANDLES) {
-        Some(cookie.0 - MAX_LISTENER_HANDLES)
-    } else {
-        None
-    }
-}
-
-/// Check if a cookie is a corresponding to a listener
-///
-/// Checks based on the contained id.
-/// Returns false for request cookies.
-fn cookie_is_listener(cookie: &AppCookie) -> bool {
-    cookie.0 < MAX_LISTENER_HANDLES
 }
 
 #[cfg(test)]
@@ -344,8 +343,11 @@ mod test {
     /// Test the creation of request and listener handles (`AppCookies`)
     #[test]
     fn test_handle_creation() {
+        const REQ_HANDLES: usize = 8;
+        const LISTENER_HANDLES: usize = 8;
         let outbound = DoNothingSender;
-        let mut router = Router::new(Eid(42), 0, outbound);
+        let mut router: Router<_, REQ_HANDLES, LISTENER_HANDLES> =
+            Router::new(Eid(42), 0, outbound);
 
         // create a new listener and expect the cookie value to be 0 (raw index of the underlying table)
         let listener = router.listener(mctp::MsgType(0));
@@ -356,10 +358,7 @@ mod test {
         // we expect the value to be MAX_LISTENER_HANDLES (request table index 0 + offset)
         let req = router.req(Eid(112));
         assert!(req.is_ok());
-        assert!(
-            req.as_ref()
-                .is_ok_and(|x| x.0 == crate::MAX_LISTENER_HANDLES)
-        );
+        assert!(req.as_ref().is_ok_and(|x| x.0 == LISTENER_HANDLES));
 
         router
             .unbind(listener.unwrap())
