@@ -2,13 +2,12 @@
 
 //! This crate provides a platform agnostic MCTP stack.
 //!
-//! It utilizes the [mctp-estack]() and re-exports parts of it.
+//! It utilizes the [mctp-estack](https://docs.rs/mctp-estack/latest/mctp_estack/) and re-exports most parts of it.
 #![no_std]
 use mctp::{Eid, Error, MsgIC, MsgType, Result, Tag};
-use mctp_estack::Stack;
 
-pub use mctp_estack::AppCookie;
-pub use mctp_estack::fragment::Fragmenter;
+use mctp_estack::fragment::Fragmenter;
+pub use mctp_estack::*;
 
 #[derive(Debug)]
 struct ReqHandle {
