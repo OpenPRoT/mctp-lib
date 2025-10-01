@@ -3,7 +3,8 @@
 //! This crate provides a platform agnostic MCTP stack.
 //!
 //! It utilizes the [mctp-estack](https://docs.rs/mctp-estack/latest/mctp_estack/) and re-exports most parts of it.
-#![no_std]
+#![cfg_attr(not(test), no_std)]
+
 use mctp::{Eid, Error, MsgIC, MsgType, Result, Tag};
 
 use mctp_estack::fragment::Fragmenter;
@@ -318,6 +319,8 @@ pub trait Sender {
 
 #[cfg(test)]
 mod test {
+    use core::cell::RefCell;
+
     use mctp::Eid;
 
     use crate::{Router, Sender};
@@ -336,6 +339,35 @@ mod test {
 
         fn get_mtu(&self) -> usize {
             255
+        }
+    }
+
+    struct BufferSender<'a, const MTU: usize> {
+        packets: &'a RefCell<Vec<Vec<u8>>>,
+    }
+
+    impl<const MTU: usize> Sender for BufferSender<'_, MTU> {
+        fn send(
+            &mut self,
+            mut fragmenter: mctp_estack::fragment::Fragmenter,
+            payload: &[u8],
+        ) -> core::result::Result<mctp::Tag, mctp::Error> {
+            loop {
+                let mut buf = [0; MTU];
+                match fragmenter.fragment(payload, &mut buf) {
+                    mctp_estack::fragment::SendOutput::Packet(items) => {
+                        self.packets.borrow_mut().push(items.into())
+                    }
+                    mctp_estack::fragment::SendOutput::Complete { tag, cookie: _ } => {
+                        return Ok(tag);
+                    }
+                    mctp_estack::fragment::SendOutput::Error { err, cookie: _ } => return Err(err),
+                }
+            }
+        }
+
+        fn get_mtu(&self) -> usize {
+            MTU
         }
     }
 
@@ -365,5 +397,88 @@ mod test {
         router
             .unbind(req.unwrap())
             .expect("failed to unbind request handle");
+    }
+
+    /// Create two routers, send a request from B to A and receive the echo response
+    #[test]
+    fn roundtrip() {
+        const REQ_HANDLES: usize = 8;
+        const LISTENER_HANDLES: usize = 8;
+        let buf_out_a = RefCell::new(Vec::new());
+        let outbound_a: BufferSender<255> = BufferSender {
+            packets: &buf_out_a,
+        };
+        let mut router_a: Router<_, LISTENER_HANDLES, REQ_HANDLES> =
+            Router::new(Eid(42), 0, outbound_a);
+
+        let buf_out_b = RefCell::new(Vec::new());
+        let outbound_b: BufferSender<255> = BufferSender {
+            packets: &buf_out_b,
+        };
+        let mut router_b: Router<_, LISTENER_HANDLES, REQ_HANDLES> =
+            Router::new(Eid(112), 0, outbound_b);
+
+        // create a new listener and expect the cookie value to be 0 (raw index of the underlying table)
+        let listener = router_a.listener(mctp::MsgType(0)).unwrap();
+
+        let requester = router_b.req(Eid(42)).unwrap();
+
+        let payload = [1; 300]; // 300 byte payload to exeed 255 byte MTU
+        router_b
+            .send(
+                None,
+                mctp::MsgType(0),
+                None,
+                mctp::MsgIC(false),
+                requester,
+                &payload,
+            )
+            .unwrap();
+
+        let packets = buf_out_b.borrow();
+        for pkt in packets.as_slice() {
+            router_a.inbound(pkt).unwrap();
+        }
+
+        let message = router_a.recv(listener).unwrap();
+        let (msg_source, msg_typ, msg_tag, msg_ic) =
+            (message.source, message.typ, message.tag, message.ic);
+        let msg_payload: Vec<_> = message.payload.into();
+        drop(message);
+
+        assert_eq!(
+            &msg_payload, &payload,
+            "Received payload does not match send payload"
+        );
+        assert!(
+            msg_tag.is_owner(),
+            "Received message is not a request (tag is unowned)"
+        );
+
+        router_a
+            .send(
+                Some(msg_source),
+                msg_typ,
+                Some(super::Tag::Unowned(msg_tag.tag())),
+                msg_ic,
+                listener,
+                &msg_payload,
+            )
+            .unwrap();
+
+        let packets = buf_out_a.borrow();
+        for pkt in packets.as_slice() {
+            router_b.inbound(pkt).unwrap();
+        }
+
+        let message = router_b.recv(requester).unwrap();
+        assert_eq!(
+            message.payload, &payload,
+            "Received payload does not match send payload"
+        );
+        assert!(
+            !message.tag.is_owner(),
+            "Received message is not a response (tag is unowned)"
+        );
     }
 }
