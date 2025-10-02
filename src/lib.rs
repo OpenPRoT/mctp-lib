@@ -1,0 +1,484 @@
+// Licensed under the Apache-2.0 license
+
+//! This crate provides a platform agnostic MCTP stack.
+//!
+//! It utilizes the [mctp-estack](https://docs.rs/mctp-estack/latest/mctp_estack/) and re-exports most parts of it.
+#![cfg_attr(not(test), no_std)]
+
+use mctp::{Eid, Error, MsgIC, MsgType, Result, Tag};
+
+use mctp_estack::fragment::Fragmenter;
+pub use mctp_estack::*;
+
+#[derive(Debug)]
+struct ReqHandle {
+    /// Destination EID
+    eid: Eid,
+    /// Tag from last send
+    ///
+    /// Has to be cleared upon receiving a response.
+    // A no-expire option might be added as a future improvement.
+    last_tag: Option<Tag>,
+}
+impl ReqHandle {
+    fn new(eid: Eid) -> ReqHandle {
+        ReqHandle {
+            eid,
+            last_tag: None,
+        }
+    }
+}
+
+/// A platform agnostic MCTP stack with routing
+///
+/// Currently only a single port/bus is supported
+#[derive(Debug)]
+pub struct Router<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize> {
+    stack: Stack,
+    sender: S,
+    /// listener handles
+    ///
+    /// The index is used to construct the AppCookie.
+    // TODO: A map with MsgType as key might be better.
+    listeners: [Option<MsgType>; MAX_LISTENER_HANDLES],
+    /// request handles
+    ///
+    /// The index is used to construct the AppCookie.
+    requests: [Option<ReqHandle>; MAX_REQ_HANDLES],
+}
+
+impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
+    Router<S, MAX_LISTENER_HANDLES, MAX_REQ_HANDLES>
+{
+    pub fn new(own_eid: Eid, now_millis: u64, outbound: S) -> Self {
+        let stack = Stack::new(own_eid, now_millis);
+        Router {
+            stack,
+            sender: outbound,
+            listeners: [None; MAX_LISTENER_HANDLES],
+            requests: [const { None }; MAX_REQ_HANDLES],
+        }
+    }
+
+    /// update the stack, returning after how many milliseconds update has to be called again
+    pub fn update(&mut self, now_millis: u64) -> Result<u64> {
+        // TODO: Handle timeouts
+        self.stack.update(now_millis).map(|x| x.0)
+    }
+
+    /// Provide an incoming packet to the router.
+    ///
+    /// This expects a single MCTP packet, without transport binding header.
+    pub fn inbound(&mut self, pkt: &[u8]) -> Result<()> {
+        let own_eid = self.stack.eid();
+        let Some(mut msg) = self.stack.receive(pkt)? else {
+            return Ok(());
+        };
+
+        if msg.dest != own_eid {
+            // Drop messages if eid does not match (for now)
+            return Ok(());
+        }
+
+        match msg.tag {
+            Tag::Unowned(_) => {
+                // check for matching requests
+                if let Some(cookie) = msg.cookie() {
+                    if Self::requests_index_from_cookie(cookie)
+                        .is_some_and(|i| self.requests[i].is_some())
+                    {
+                        msg.retain();
+                        return Ok(());
+                    }
+                }
+                // In this case an unowned message that isn't associated to a request was received.
+                // This might happen, if if this endpoint was inteded to route the packet to a different
+                // bus it is connected to (bridge configuration).
+                // Support for this is missing right now.
+            }
+            Tag::Owned(_) => {
+                // check for matching listeners and retain with cookie
+                for i in 0..self.listeners.len() {
+                    if self.listeners[i] == Some(msg.typ) {
+                        msg.set_cookie(Some(Self::listener_cookie_from_index(i)));
+                        msg.retain();
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Return Ok(()) even if a message has been discarded
+        Ok(())
+    }
+
+    /// Allocate a new request "_Handle_"
+    pub fn req(&mut self, eid: Eid) -> Result<AppCookie> {
+        for (index, handle) in self.requests.iter_mut().enumerate() {
+            if handle.is_none() {
+                let _ = handle.insert(ReqHandle::new(eid));
+                return Ok(Self::req_cookie_from_index(index));
+            }
+        }
+        Err(mctp::Error::NoSpace)
+    }
+
+    /// Allocate a new listener for [`typ`](MsgType)
+    ///
+    /// Returns an [AppCookie] when successful, [AddrInUse](mctp::Error::AddrInUse) when a listener for `typ` already exists,
+    /// [NoSpace](mctp::Error::NoSpace) when all listener slots are occupied.
+    pub fn listener(&mut self, typ: MsgType) -> Result<AppCookie> {
+        if self.listeners.iter().any(|x| x == &Some(typ)) {
+            return Err(mctp::Error::AddrInUse);
+        }
+        for (index, handle) in self.listeners.iter_mut().enumerate() {
+            if handle.is_none() {
+                let _ = handle.insert(typ);
+                return Ok(Self::listener_cookie_from_index(index));
+            }
+        }
+        Err(mctp::Error::NoSpace)
+    }
+
+    /// Get the currently configured _Eid_ for this endpoint
+    pub fn get_eid(&self) -> Eid {
+        self.stack.eid()
+    }
+
+    /// Set the _Eid_ for this endpoint
+    pub fn set_eid(&mut self, eid: Eid) -> Result<()> {
+        self.stack.set_eid(eid.0)
+    }
+
+    /// Send a message
+    ///
+    /// When responding to a request received by a listener, `eid` and `tag` have to be set.
+    /// A request usually won't set a `eid`.
+    /// When no `tag` is supplied for a request, a new one will be allocated.
+    pub fn send(
+        &mut self,
+        eid: Option<Eid>,
+        typ: MsgType,
+        tag: Option<Tag>,
+        ic: MsgIC,
+        cookie: AppCookie,
+        buf: &[u8],
+    ) -> Result<Tag> {
+        let Some(eid) = eid.or(self.lookup_request(cookie).map(|r| r.eid)) else {
+            return Err(Error::InvalidInput);
+        };
+        let frag = self.stack.start_send(
+            eid,
+            typ,
+            tag,
+            true,
+            ic,
+            Some(self.sender.get_mtu()),
+            Some(cookie),
+        )?;
+
+        self.sender.send(frag, buf)
+    }
+
+    /// Send a vectored message
+    ///
+    /// When responding to a request received by a listener, `eid` and `tag` have to be set.
+    /// A request usually won't set a `eid`.
+    /// When no `tag` is supplied for a request, a new one will be allocated.
+    ///
+    /// The `bufs` will be copied to a new buffer with `MAX_PAYLOAD` size.
+    pub fn send_vectored(
+        &mut self,
+        eid: Option<Eid>,
+        typ: MsgType,
+        tag: Option<Tag>,
+        ic: MsgIC,
+        cookie: AppCookie,
+        bufs: &[&[u8]],
+    ) -> Result<Tag> {
+        let mut local_buffer = [0; mctp_estack::config::MAX_PAYLOAD];
+
+        let payload = if bufs.len() == 1 {
+            bufs[0]
+        } else {
+            let total_len = bufs.iter().fold(0, |acc, x| acc + x.len());
+            if total_len > mctp_estack::config::MAX_PAYLOAD {
+                return Err(Error::NoSpace);
+            }
+            let mut start = 0;
+            for p in bufs {
+                local_buffer[start..p.len()].copy_from_slice(p);
+                start += p.len();
+            }
+            &local_buffer[..total_len]
+        };
+        // TODO: this seems unnecessary,
+        // the fragmenter should iterate over the bufs requiring only a single packet buffer.
+
+        self.send(eid, typ, tag, ic, cookie, payload)
+    }
+
+    /// Receive a message associated with a [`AppCookie`]
+    ///
+    /// Returns `None` when no message is available for the listener/request.
+    pub fn recv(&mut self, cookie: AppCookie) -> Option<mctp_estack::MctpMessage<'_>> {
+        self.stack.get_deferred_bycookie(&[cookie])
+    }
+
+    /// Unbind a listener/request
+    ///
+    /// This has to be called to free the request/listener slot.
+    /// Returns [BadArgument](Error::BadArgument) for cookies that are malformed or non existent.
+    pub fn unbind(&mut self, cookie: AppCookie) -> Result<()> {
+        if Self::cookie_is_listener(&cookie) {
+            self.listeners[Self::listeners_index_from_cookie(cookie).ok_or(Error::BadArgument)?]
+                .take()
+                .ok_or(Error::BadArgument)?;
+            Ok(())
+        } else {
+            let req = self.requests
+                [Self::requests_index_from_cookie(cookie).ok_or(Error::BadArgument)?]
+            .take()
+            .ok_or(Error::BadArgument)?;
+            if let ReqHandle {
+                eid,
+                last_tag: Some(tag),
+            } = req
+            {
+                self.stack.cancel_flow(eid, tag.tag());
+            }
+            Ok(())
+        }
+    }
+
+    fn lookup_request(&self, cookie: AppCookie) -> Option<&ReqHandle> {
+        Self::requests_index_from_cookie(cookie).and_then(|i| self.requests[i].as_ref())
+    }
+
+    /// Function to create a router unique AppCookie for listeners
+    ///
+    /// Currently the listeners are just the index ranging from 0 to LISTENER_HANDLES-1.
+    /// Requests are enumerated from LISTENER_HANDLES to LISTENER_HANDLES+REQUEST_HANDLES-1
+    fn listener_cookie_from_index(i: usize) -> AppCookie {
+        debug_assert!(
+            i < MAX_LISTENER_HANDLES,
+            "tried to create out of range listener AppCookie!"
+        );
+        AppCookie(i)
+    }
+
+    /// Function to create a router unique AppCookie for requests
+    ///
+    /// Currently the listeners are just the index ranging from 0 to LISTENER_HANDLES-1.
+    /// Requests are enumerated from LISTENER_HANDLES to LISTENER_HANDLES+REQUEST_HANDLES-1
+    fn req_cookie_from_index(i: usize) -> AppCookie {
+        debug_assert!(
+            i < MAX_REQ_HANDLES,
+            "tried to create out of range request AppCookie!"
+        );
+        AppCookie(i + MAX_LISTENER_HANDLES)
+    }
+
+    /// Get the listeners array index from a AppCookie
+    ///
+    /// Returns `None` for invalid cookies.
+    fn listeners_index_from_cookie(cookie: AppCookie) -> Option<usize> {
+        if cookie.0 < MAX_LISTENER_HANDLES {
+            Some(cookie.0)
+        } else {
+            None
+        }
+    }
+
+    /// Get the requesters array index from a AppCookie
+    ///
+    /// Returns `None` for invalid cookies.
+    fn requests_index_from_cookie(cookie: AppCookie) -> Option<usize> {
+        if cookie.0 >= MAX_LISTENER_HANDLES && cookie.0 < (MAX_LISTENER_HANDLES + MAX_REQ_HANDLES) {
+            Some(cookie.0 - MAX_LISTENER_HANDLES)
+        } else {
+            None
+        }
+    }
+
+    /// Check if a cookie is a corresponding to a listener
+    ///
+    /// Checks based on the contained id.
+    /// Returns false for request cookies.
+    fn cookie_is_listener(cookie: &AppCookie) -> bool {
+        cookie.0 < MAX_LISTENER_HANDLES
+    }
+}
+
+pub trait Sender {
+    /// Send a packet fragmented by `fragmenter` with the payload `payload`
+    fn send(&mut self, fragmenter: Fragmenter, payload: &[u8]) -> Result<Tag>;
+    /// Get the MTU of a MCTP packet fragment (without transport headers)
+    fn get_mtu(&self) -> usize;
+}
+
+#[cfg(test)]
+mod test {
+    use core::cell::RefCell;
+
+    use mctp::Eid;
+
+    use crate::{Router, Sender};
+
+    struct DoNothingSender;
+
+    impl Sender for DoNothingSender {
+        fn send(
+            &mut self,
+            fragmenter: mctp_estack::fragment::Fragmenter,
+            payload: &[u8],
+        ) -> core::result::Result<mctp::Tag, mctp::Error> {
+            let _ = payload;
+            Ok(fragmenter.tag())
+        }
+
+        fn get_mtu(&self) -> usize {
+            255
+        }
+    }
+
+    struct BufferSender<'a, const MTU: usize> {
+        packets: &'a RefCell<Vec<Vec<u8>>>,
+    }
+
+    impl<const MTU: usize> Sender for BufferSender<'_, MTU> {
+        fn send(
+            &mut self,
+            mut fragmenter: mctp_estack::fragment::Fragmenter,
+            payload: &[u8],
+        ) -> core::result::Result<mctp::Tag, mctp::Error> {
+            loop {
+                let mut buf = [0; MTU];
+                match fragmenter.fragment(payload, &mut buf) {
+                    mctp_estack::fragment::SendOutput::Packet(items) => {
+                        self.packets.borrow_mut().push(items.into())
+                    }
+                    mctp_estack::fragment::SendOutput::Complete { tag, cookie: _ } => {
+                        return Ok(tag);
+                    }
+                    mctp_estack::fragment::SendOutput::Error { err, cookie: _ } => return Err(err),
+                }
+            }
+        }
+
+        fn get_mtu(&self) -> usize {
+            MTU
+        }
+    }
+
+    /// Test the creation of request and listener handles (`AppCookies`)
+    #[test]
+    fn test_handle_creation() {
+        const REQ_HANDLES: usize = 8;
+        const LISTENER_HANDLES: usize = 8;
+        let outbound = DoNothingSender;
+        let mut router: Router<_, REQ_HANDLES, LISTENER_HANDLES> =
+            Router::new(Eid(42), 0, outbound);
+
+        // create a new listener and expect the cookie value to be 0 (raw index of the underlying table)
+        let listener = router.listener(mctp::MsgType(0));
+        assert!(listener.is_ok());
+        assert!(listener.as_ref().is_ok_and(|x| x.0 == 0));
+
+        // create a new request
+        // we expect the value to be MAX_LISTENER_HANDLES (request table index 0 + offset)
+        let req = router.req(Eid(112));
+        assert!(req.is_ok());
+        assert!(req.as_ref().is_ok_and(|x| x.0 == LISTENER_HANDLES));
+
+        router
+            .unbind(listener.unwrap())
+            .expect("failed to unbind listener handle");
+        router
+            .unbind(req.unwrap())
+            .expect("failed to unbind request handle");
+    }
+
+    /// Create two routers, send a request from B to A and receive the echo response
+    #[test]
+    fn roundtrip() {
+        const REQ_HANDLES: usize = 8;
+        const LISTENER_HANDLES: usize = 8;
+        let buf_out_a = RefCell::new(Vec::new());
+        let outbound_a: BufferSender<255> = BufferSender {
+            packets: &buf_out_a,
+        };
+        let mut router_a: Router<_, LISTENER_HANDLES, REQ_HANDLES> =
+            Router::new(Eid(42), 0, outbound_a);
+
+        let buf_out_b = RefCell::new(Vec::new());
+        let outbound_b: BufferSender<255> = BufferSender {
+            packets: &buf_out_b,
+        };
+        let mut router_b: Router<_, LISTENER_HANDLES, REQ_HANDLES> =
+            Router::new(Eid(112), 0, outbound_b);
+
+        // create a new listener and expect the cookie value to be 0 (raw index of the underlying table)
+        let listener = router_a.listener(mctp::MsgType(0)).unwrap();
+
+        let requester = router_b.req(Eid(42)).unwrap();
+
+        let payload = [1; 300]; // 300 byte payload to exeed 255 byte MTU
+        router_b
+            .send(
+                None,
+                mctp::MsgType(0),
+                None,
+                mctp::MsgIC(false),
+                requester,
+                &payload,
+            )
+            .unwrap();
+
+        let packets = buf_out_b.borrow();
+        for pkt in packets.as_slice() {
+            router_a.inbound(pkt).unwrap();
+        }
+
+        let message = router_a.recv(listener).unwrap();
+        let (msg_source, msg_typ, msg_tag, msg_ic) =
+            (message.source, message.typ, message.tag, message.ic);
+        let msg_payload: Vec<_> = message.payload.into();
+        drop(message);
+
+        assert_eq!(
+            &msg_payload, &payload,
+            "Received payload does not match send payload"
+        );
+        assert!(
+            msg_tag.is_owner(),
+            "Received message is not a request (tag is unowned)"
+        );
+
+        router_a
+            .send(
+                Some(msg_source),
+                msg_typ,
+                Some(super::Tag::Unowned(msg_tag.tag())),
+                msg_ic,
+                listener,
+                &msg_payload,
+            )
+            .unwrap();
+
+        let packets = buf_out_a.borrow();
+        for pkt in packets.as_slice() {
+            router_b.inbound(pkt).unwrap();
+        }
+
+        let message = router_b.recv(requester).unwrap();
+        assert_eq!(
+            message.payload, &payload,
+            "Received payload does not match send payload"
+        );
+        assert!(
+            !message.tag.is_owner(),
+            "Received message is not a response (tag is unowned)"
+        );
+    }
+}
