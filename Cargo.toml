@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-mctp-estack = { git = "https://github.com/9elements/mctp-rs.git", branch = "main", default-features = false, features = ["log"] }
-mctp = { git = "https://github.com/9elements/mctp-rs.git", branch = "main", default-features = false }
+mctp-estack = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features", default-features = false, features = ["log"] }
+mctp = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features", default-features = false }
