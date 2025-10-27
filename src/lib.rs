@@ -39,7 +39,6 @@ pub struct Router<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HA
     /// listener handles
     ///
     /// The index is used to construct the AppCookie.
-    // TODO: A map with MsgType as key might be better.
     listeners: [Option<MsgType>; MAX_LISTENER_HANDLES],
     /// request handles
     ///
@@ -60,9 +59,11 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
         }
     }
 
-    /// update the stack, returning after how many milliseconds update has to be called again
+    /// Update the stack, returning after how many milliseconds update has to be called again
+    ///
+    /// Currently functionality to wake up expired receive calls is obligation of the implementer.
+    /// This might be canged in a future version.
     pub fn update(&mut self, now_millis: u64) -> Result<u64> {
-        // TODO: Handle timeouts
         self.stack.update(now_millis).map(|x| x.0)
     }
 
@@ -164,20 +165,7 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
         cookie: AppCookie,
         buf: &[u8],
     ) -> Result<Tag> {
-        let Some(eid) = eid.or(self.lookup_request(cookie).map(|r| r.eid)) else {
-            return Err(Error::InvalidInput);
-        };
-        let frag = self.stack.start_send(
-            eid,
-            typ,
-            tag,
-            true,
-            ic,
-            Some(self.sender.get_mtu()),
-            Some(cookie),
-        )?;
-
-        self.sender.send(frag, buf)
+        self.send_vectored(eid, typ, tag, ic, cookie, &[buf])
     }
 
     /// Send a vectored message
@@ -196,26 +184,20 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
         cookie: AppCookie,
         bufs: &[&[u8]],
     ) -> Result<Tag> {
-        let mut local_buffer = [0; mctp_estack::config::MAX_PAYLOAD];
-
-        let payload = if bufs.len() == 1 {
-            bufs[0]
-        } else {
-            let total_len = bufs.iter().fold(0, |acc, x| acc + x.len());
-            if total_len > mctp_estack::config::MAX_PAYLOAD {
-                return Err(Error::NoSpace);
-            }
-            let mut start = 0;
-            for p in bufs {
-                local_buffer[start..p.len()].copy_from_slice(p);
-                start += p.len();
-            }
-            &local_buffer[..total_len]
+        let Some(eid) = eid.or(self.lookup_request(cookie).map(|r| r.eid)) else {
+            return Err(Error::InvalidInput);
         };
-        // TODO: this seems unnecessary,
-        // the fragmenter should iterate over the bufs requiring only a single packet buffer.
+        let frag = self.stack.start_send(
+            eid,
+            typ,
+            tag,
+            true,
+            ic,
+            Some(self.sender.get_mtu()),
+            Some(cookie),
+        )?;
 
-        self.send(eid, typ, tag, ic, cookie, payload)
+        self.sender.send_vectored(frag, bufs)
     }
 
     /// Receive a message associated with a [`AppCookie`]
@@ -312,7 +294,7 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
 
 pub trait Sender {
     /// Send a packet fragmented by `fragmenter` with the payload `payload`
-    fn send(&mut self, fragmenter: Fragmenter, payload: &[u8]) -> Result<Tag>;
+    fn send_vectored(&mut self, fragmenter: Fragmenter, payload: &[&[u8]]) -> Result<Tag>;
     /// Get the MTU of a MCTP packet fragment (without transport headers)
     fn get_mtu(&self) -> usize;
 }
@@ -328,10 +310,10 @@ mod test {
     struct DoNothingSender;
 
     impl Sender for DoNothingSender {
-        fn send(
+        fn send_vectored(
             &mut self,
             fragmenter: mctp_estack::fragment::Fragmenter,
-            payload: &[u8],
+            payload: &[&[u8]],
         ) -> core::result::Result<mctp::Tag, mctp::Error> {
             let _ = payload;
             Ok(fragmenter.tag())
@@ -347,14 +329,14 @@ mod test {
     }
 
     impl<const MTU: usize> Sender for BufferSender<'_, MTU> {
-        fn send(
+        fn send_vectored(
             &mut self,
             mut fragmenter: mctp_estack::fragment::Fragmenter,
-            payload: &[u8],
+            payload: &[&[u8]],
         ) -> core::result::Result<mctp::Tag, mctp::Error> {
             loop {
                 let mut buf = [0; MTU];
-                match fragmenter.fragment(payload, &mut buf) {
+                match fragmenter.fragment_vectored(payload, &mut buf) {
                     mctp_estack::fragment::SendOutput::Packet(items) => {
                         self.packets.borrow_mut().push(items.into())
                     }
