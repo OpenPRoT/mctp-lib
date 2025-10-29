@@ -1,8 +1,9 @@
 // Licensed under the Apache-2.0 license
 
-//! This crate provides a platform agnostic MCTP stack.
+//! This crate provides a platform-agnostic MCTP stack.
 //!
-//! It utilizes the [mctp-estack](https://docs.rs/mctp-estack/latest/mctp_estack/) and re-exports most parts of it.
+//! It uses the [mctp-estack](https://docs.rs/mctp-estack/latest/mctp_estack/) and re-exports most
+//! parts of it.
 #![cfg_attr(not(test), no_std)]
 
 use mctp::{Eid, Error, MsgIC, MsgType, Result, Tag};
@@ -14,7 +15,7 @@ pub use mctp_estack::*;
 struct ReqHandle {
     /// Destination EID
     eid: Eid,
-    /// Tag from last send
+    /// Tag from last send operation
     ///
     /// Has to be cleared upon receiving a response.
     // A no-expire option might be added as a future improvement.
@@ -29,18 +30,18 @@ impl ReqHandle {
     }
 }
 
-/// A platform agnostic MCTP stack with routing
+/// A platform-agnostic MCTP stack with routing
 ///
-/// Currently only a single port/bus is supported
+/// Only a single port/bus is supported
 #[derive(Debug)]
 pub struct Router<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize> {
     stack: Stack,
     sender: S,
-    /// listener handles
+    /// Listener handles
     ///
     /// The index is used to construct the AppCookie.
     listeners: [Option<MsgType>; MAX_LISTENER_HANDLES],
-    /// request handles
+    /// Request handles
     ///
     /// The index is used to construct the AppCookie.
     requests: [Option<ReqHandle>; MAX_REQ_HANDLES],
@@ -59,17 +60,21 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
         }
     }
 
-    /// Update the stack, returning after how many milliseconds update has to be called again
+    /// Update the stack
     ///
-    /// Currently functionality to wake up expired receive calls is obligation of the implementer.
-    /// This might be canged in a future version.
+    /// Returns an interval value in milliseconds in which the next call to `update()` should be
+    /// issued.
+    ///
+    /// Note:
+    /// It is the obligation of the implementer to wake up expired receive calls. However,
+    /// this may be changed in future versions.
     pub fn update(&mut self, now_millis: u64) -> Result<u64> {
         self.stack.update(now_millis).map(|x| x.0)
     }
 
     /// Provide an incoming packet to the router.
     ///
-    /// This expects a single MCTP packet, without transport binding header.
+    /// This expects a single MCTP packet, without a transport binding header.
     pub fn inbound(&mut self, pkt: &[u8]) -> Result<()> {
         let own_eid = self.stack.eid();
         let Some(mut msg) = self.stack.receive(pkt)? else {
@@ -92,8 +97,8 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
                         return Ok(());
                     }
                 }
-                // In this case an unowned message that isn't associated to a request was received.
-                // This might happen, if if this endpoint was inteded to route the packet to a different
+                // In this case an unowned message not associated with a request was received.
+                // This might happen if this endpoint was intended to route the packet to a different
                 // bus it is connected to (bridge configuration).
                 // Support for this is missing right now.
             }
@@ -126,7 +131,8 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
 
     /// Allocate a new listener for [`typ`](MsgType)
     ///
-    /// Returns an [AppCookie] when successful, [AddrInUse](mctp::Error::AddrInUse) when a listener for `typ` already exists,
+    /// Returns an [AppCookie] when successful, [AddrInUse](mctp::Error::AddrInUse) when a listener
+    /// for `typ` already exists,
     /// [NoSpace](mctp::Error::NoSpace) when all listener slots are occupied.
     pub fn listener(&mut self, typ: MsgType) -> Result<AppCookie> {
         if self.listeners.iter().any(|x| x == &Some(typ)) {
@@ -154,7 +160,7 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
     /// Send a message
     ///
     /// When responding to a request received by a listener, `eid` and `tag` have to be set.
-    /// A request usually won't set a `eid`.
+    /// A request usually won't set an ` eid `.
     /// When no `tag` is supplied for a request, a new one will be allocated.
     pub fn send(
         &mut self,
@@ -171,7 +177,7 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
     /// Send a vectored message
     ///
     /// When responding to a request received by a listener, `eid` and `tag` have to be set.
-    /// A request usually won't set a `eid`.
+    /// A request usually won't set an `eid`.
     /// When no `tag` is supplied for a request, a new one will be allocated.
     ///
     /// The `bufs` will be copied to a new buffer with `MAX_PAYLOAD` size.
@@ -210,7 +216,7 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
     /// Unbind a listener/request
     ///
     /// This has to be called to free the request/listener slot.
-    /// Returns [BadArgument](Error::BadArgument) for cookies that are malformed or non existent.
+    /// Returns [BadArgument](Error::BadArgument) for cookies that are malformed or non-existent.
     pub fn unbind(&mut self, cookie: AppCookie) -> Result<()> {
         if Self::cookie_is_listener(&cookie) {
             self.listeners[Self::listeners_index_from_cookie(cookie).ok_or(Error::BadArgument)?]
@@ -239,7 +245,7 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
 
     /// Function to create a router unique AppCookie for listeners
     ///
-    /// Currently the listeners are just the index ranging from 0 to LISTENER_HANDLES-1.
+    /// Currently, the listeners are just the index ranging from 0 to LISTENER_HANDLES-1.
     /// Requests are enumerated from LISTENER_HANDLES to LISTENER_HANDLES+REQUEST_HANDLES-1
     fn listener_cookie_from_index(i: usize) -> AppCookie {
         debug_assert!(
@@ -249,10 +255,10 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
         AppCookie(i)
     }
 
-    /// Function to create a router unique AppCookie for requests
+    /// Function to create a router unique [AppCookie] for requests
     ///
-    /// Currently the listeners are just the index ranging from 0 to LISTENER_HANDLES-1.
-    /// Requests are enumerated from LISTENER_HANDLES to LISTENER_HANDLES+REQUEST_HANDLES-1
+    /// Currently, the listeners are just the index ranging from 0 to `LISTENER_HANDLES-1`.
+    /// Requests are enumerated from `LISTENER_HANDLES` to `LISTENER_HANDLES+REQUEST_HANDLES-1`.
     fn req_cookie_from_index(i: usize) -> AppCookie {
         debug_assert!(
             i < MAX_REQ_HANDLES,
@@ -261,7 +267,7 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
         AppCookie(i + MAX_LISTENER_HANDLES)
     }
 
-    /// Get the listeners array index from a AppCookie
+    /// Get the listener array index from an [AppCookie]
     ///
     /// Returns `None` for invalid cookies.
     fn listeners_index_from_cookie(cookie: AppCookie) -> Option<usize> {
@@ -272,7 +278,7 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
         }
     }
 
-    /// Get the requesters array index from a AppCookie
+    /// Get the requester array index from a [AppCookie]
     ///
     /// Returns `None` for invalid cookies.
     fn requests_index_from_cookie(cookie: AppCookie) -> Option<usize> {
@@ -405,7 +411,7 @@ mod test {
 
         let requester = router_b.req(Eid(42)).unwrap();
 
-        let payload = [1; 300]; // 300 byte payload to exeed 255 byte MTU
+        let payload = [1; 300]; // 300 byte payload to exceed 255 byte MTU
         router_b
             .send(
                 None,
