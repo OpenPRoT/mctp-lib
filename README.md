@@ -1,6 +1,8 @@
 # OpenPRoT mctp-lib
 
-This repository contains a standalone MCTP library implemented in Rust, used by the OpenPRoT project.
+This repository contains a platform agnostic MCTP stack implemented in Rust, used by the OpenPRoT project.
+
+It utilizes the [mctp-estack](https://docs.rs/mctp-estack/latest/mctp_estack/) and re-exports most parts of it.
 
 ## Technical Charter
 
