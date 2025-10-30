@@ -92,13 +92,12 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
         match msg.tag {
             Tag::Unowned(_) => {
                 // check for matching requests
-                if let Some(cookie) = msg.cookie() {
-                    if Self::requests_index_from_cookie(cookie)
-                        .is_some_and(|i| self.requests[i].is_some())
-                    {
-                        msg.retain();
-                        return Ok(());
-                    }
+                if let Some(cookie) = msg.cookie()
+                    && Self::requests_index_from_cookie(cookie)
+                        .is_some_and(|i| self.requests.get(i).is_some_and(|r| r.is_some()))
+                {
+                    msg.retain();
+                    return Ok(());
                 }
                 // In this case an unowned message not associated with a request was received.
                 // This might happen if this endpoint was intended to route the packet to a different
@@ -222,15 +221,19 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
     /// Returns [BadArgument](Error::BadArgument) for cookies that are malformed or non-existent.
     pub fn unbind(&mut self, cookie: AppCookie) -> Result<()> {
         if Self::cookie_is_listener(&cookie) {
-            self.listeners[Self::listeners_index_from_cookie(cookie).ok_or(Error::BadArgument)?]
+            self.listeners
+                .get_mut(Self::listeners_index_from_cookie(cookie).ok_or(Error::BadArgument)?)
+                .ok_or(Error::InternalError)?
                 .take()
                 .ok_or(Error::BadArgument)?;
             Ok(())
         } else {
-            let req = self.requests
-                [Self::requests_index_from_cookie(cookie).ok_or(Error::BadArgument)?]
-            .take()
-            .ok_or(Error::BadArgument)?;
+            let req = self
+                .requests
+                .get_mut(Self::requests_index_from_cookie(cookie).ok_or(Error::BadArgument)?)
+                .ok_or(Error::InternalError)?
+                .take()
+                .ok_or(Error::BadArgument)?;
             if let ReqHandle {
                 eid,
                 last_tag: Some(tag),
@@ -243,7 +246,8 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
     }
 
     fn lookup_request(&self, cookie: AppCookie) -> Option<&ReqHandle> {
-        Self::requests_index_from_cookie(cookie).and_then(|i| self.requests[i].as_ref())
+        Self::requests_index_from_cookie(cookie)
+            .and_then(|i| self.requests.get(i).and_then(|r| r.as_ref()))
     }
 
     /// Function to create a router unique AppCookie for listeners
@@ -391,6 +395,12 @@ mod test {
         router
             .unbind(req.unwrap())
             .expect("failed to unbind request handle");
+        for listener in router.listeners {
+            assert!(listener.is_none());
+        }
+        for request in router.requests {
+            assert!(request.is_none());
+        }
     }
 
     /// Create two routers, send a request from B to A and receive the echo response
