@@ -5,6 +5,8 @@
 //! It uses the [mctp-estack](https://docs.rs/mctp-estack/latest/mctp_estack/) and re-exports most
 //! parts of it.
 #![cfg_attr(not(test), no_std)]
+#![deny(unsafe_code)]
+#![deny(missing_docs)]
 
 use mctp::{Eid, Error, MsgIC, MsgType, Result, Tag};
 
@@ -50,6 +52,7 @@ pub struct Router<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HA
 impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
     Router<S, MAX_LISTENER_HANDLES, MAX_REQ_HANDLES>
 {
+    /// Create a new `Router` that routes `outbound` trafic to [S](Sender)
     pub fn new(own_eid: Eid, now_millis: u64, outbound: S) -> Self {
         let stack = Stack::new(own_eid, now_millis);
         Router {
@@ -298,6 +301,9 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
     }
 }
 
+/// A Sender used by a [Router] to send data
+///
+/// Implemented by a transport binding for sending packets.
 pub trait Sender {
     /// Send a packet fragmented by `fragmenter` with the payload `payload`
     fn send_vectored(&mut self, fragmenter: Fragmenter, payload: &[&[u8]]) -> Result<Tag>;
