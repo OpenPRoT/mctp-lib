@@ -7,6 +7,10 @@
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
+#![deny(clippy::missing_panics_doc)]
+#![deny(clippy::panic)]
+#![deny(clippy::panicking_overflow_checks)]
+#![deny(clippy::indexing_slicing)]
 
 use mctp::{Eid, Error, MsgIC, MsgType, Result, Tag};
 
@@ -107,7 +111,7 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
             Tag::Owned(_) => {
                 // check for matching listeners and retain with cookie
                 for i in 0..self.listeners.len() {
-                    if self.listeners[i] == Some(msg.typ) {
+                    if self.listeners.get(i).ok_or(Error::InternalError)? == &Some(msg.typ) {
                         msg.set_cookie(Some(Self::listener_cookie_from_index(i)));
                         msg.retain();
                         return Ok(());
@@ -316,6 +320,7 @@ pub trait Sender {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod test {
     use core::cell::RefCell;
 
