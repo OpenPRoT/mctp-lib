@@ -5,13 +5,15 @@ edition = "2024"
 authors = ["OpenPRoT Contributors"]
 license = "Apache-2.0"
 description = "Platform-agnostic MCTP (Management Component Transport Protocol) library for embedded systems"
-repository = "https://github.com/rusty1968/mctp-lib"
+repository = "https://github.com/OpenPRoT/mctp-lib"
 keywords = ["mctp", "embedded", "no-std", "protocol", "openprot"]
 categories = ["embedded", "no-std"]
 
 [features]
 
 [dependencies]
+mctp-estack = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features", default-features = false, features = ["log"] }
+mctp = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features", default-features = false }
 
 [dev-dependencies]
 
