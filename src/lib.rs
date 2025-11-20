@@ -100,8 +100,10 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
             return Ok(());
         };
 
-        if msg.dest != own_eid {
-            // Drop messages if eid does not match (for now)
+        if msg.dest != own_eid && msg.dest != Eid(0) {
+            // Drop messages if eid does not match (for now).
+            // EID 0 messages are used for physical addressing
+            // and will thus be processed.
             return Ok(());
         }
 
