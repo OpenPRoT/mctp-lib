@@ -100,8 +100,10 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
             return Ok(());
         };
 
-        if msg.dest != own_eid {
-            // Drop messages if eid does not match (for now)
+        if msg.dest != own_eid && msg.dest != Eid(0) {
+            // Drop messages if eid does not match (for now).
+            // EID 0 messages are used for physical addressing
+            // and will thus be processed.
             return Ok(());
         }
 
@@ -221,7 +223,7 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
             Some(cookie),
         )?;
 
-        self.sender.send_vectored(frag, bufs)
+        self.sender.send_vectored(eid, frag, bufs)
     }
 
     /// Receive a message associated with a [`AppCookie`]
@@ -326,7 +328,8 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
 /// Implemented by a transport binding for sending packets.
 pub trait Sender {
     /// Send a packet fragmented by `fragmenter` with the payload `payload`
-    fn send_vectored(&mut self, fragmenter: Fragmenter, payload: &[&[u8]]) -> Result<Tag>;
+    fn send_vectored(&mut self, eid: Eid, fragmenter: Fragmenter, payload: &[&[u8]])
+    -> Result<Tag>;
     /// Get the MTU of a MCTP packet fragment (without transport headers)
     fn get_mtu(&self) -> usize;
 }
@@ -345,6 +348,7 @@ mod test {
     impl Sender for DoNothingSender {
         fn send_vectored(
             &mut self,
+            _eid: Eid,
             fragmenter: mctp_estack::fragment::Fragmenter,
             payload: &[&[u8]],
         ) -> core::result::Result<mctp::Tag, mctp::Error> {
@@ -364,6 +368,7 @@ mod test {
     impl<const MTU: usize> Sender for BufferSender<'_, MTU> {
         fn send_vectored(
             &mut self,
+            _eid: Eid,
             mut fragmenter: mctp_estack::fragment::Fragmenter,
             payload: &[&[u8]],
         ) -> core::result::Result<mctp::Tag, mctp::Error> {
