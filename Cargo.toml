@@ -16,6 +16,8 @@ mctp-estack = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-
 mctp = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features", default-features = false }
 
 [dev-dependencies]
+mctp = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features" }
+standalone = { path = "standalone" }
 
 [package.metadata.docs.rs]
 all-features = true
