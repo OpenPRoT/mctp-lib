@@ -14,9 +14,10 @@ categories = ["embedded", "no-std"]
 [dependencies]
 mctp-estack = { git = "https://github.com/CodeConstruct/mctp-rs.git", rev = "9e52b626863b916d900ca1ddfdd9215baf0f80fc" , default-features = false, features = ["log"]}
 mctp = { git = "https://github.com/CodeConstruct/mctp-rs.git", rev = "9e52b626863b916d900ca1ddfdd9215baf0f80fc" , default-features = false }
+zerocopy = {version = "0.8.17", features = ["derive"]}
 
 [dev-dependencies]
-mctp = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features" }
+mctp = { git = "https://github.com/CodeConstruct/mctp-rs.git", rev = "9e52b626863b916d900ca1ddfdd9215baf0f80fc" , default-features = false }
 standalone = { path = "standalone" }
 
 [package.metadata.docs.rs]
