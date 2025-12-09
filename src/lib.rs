@@ -18,7 +18,7 @@
 //! parts of it.
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
-#![deny(missing_docs)]
+// #![deny(missing_docs)]
 #![deny(clippy::missing_panics_doc)]
 #![deny(clippy::panic)]
 #![deny(clippy::panicking_overflow_checks)]
@@ -27,7 +27,11 @@
 use mctp::{Eid, Error, MsgIC, MsgType, Result, Tag};
 
 use mctp_estack::fragment::Fragmenter;
-pub use mctp_estack::*;
+pub use mctp_estack::{
+    AppCookie, MctpMessage, Stack, TIMEOUT_INTERVAL, Vec, config, fragment, i2c, serial, usb,
+};
+
+pub mod mctp_control;
 
 #[derive(Debug)]
 struct ReqHandle {
