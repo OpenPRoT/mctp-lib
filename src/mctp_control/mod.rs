@@ -890,7 +890,7 @@ impl<'a> MctpCodec<'a> for GetMCTPVersionSupportResponse<'a> {
     const MCTP_CODEC_MIN_SIZE: usize = 2 + 4 * 8;
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct GetMctpMessageTypeSupportResponse<'a> {
     pub completion_code: CompletionCode,
     pub message_type_count: u8,
@@ -1101,4 +1101,589 @@ impl<const TRANSPORT_ADDRESS_LENGTH: usize> MctpCodec<'_>
     }
 
     const MCTP_CODEC_MIN_SIZE: usize = 2 + TRANSPORT_ADDRESS_LENGTH;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mctp_control_header_new() {
+        let header = MctpControlHeader::new(true, false, 0x1F, CommandCode::SetEndpointID);
+
+        assert!(header.request);
+        assert!(!header.datagram);
+        assert_eq!(header.instance_id, 0x1F);
+        assert_eq!(header.command_code, CommandCode::SetEndpointID);
+    }
+
+    #[test]
+    fn test_mctp_control_header_encode_basic() {
+        let header = MctpControlHeader::new(true, false, 0x15, CommandCode::GetEndpointID);
+
+        let mut buffer = [0u8; 4];
+        let result = header.encode(&mut buffer);
+
+        let mctp_header_expected_size: usize = 2;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), mctp_header_expected_size);
+
+        // Check encoded values
+        // request=1, datagram=0, instance_id=0x15 -> 0b1001_0101 = 0x95
+        assert_eq!(buffer.first().copied().unwrap(), 0x95);
+        assert_eq!(buffer.get(1).copied().unwrap(), 0x02); // GetEndpointID = 0x02
+    }
+
+    #[test]
+    fn test_mctp_control_header_encode_buffer_too_short() {
+        let header = MctpControlHeader::new(true, false, 0x10, CommandCode::GetEndpointID);
+
+        let mut buffer = [0u8; 1]; // Too short
+        let result = header.encode(&mut buffer);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), MctpCodecError::BufferTooShort);
+    }
+
+    #[test]
+    fn test_mctp_control_header_decode_basic() {
+        let buffer = [0x95, 0x02]; // request=1, datagram=0, instance_id=0x15, cmd=0x02
+
+        let result = MctpControlHeader::decode(&buffer);
+
+        assert!(result.is_ok());
+        let header = result.unwrap();
+        assert!(header.request);
+        assert!(!header.datagram);
+        assert_eq!(header.instance_id, 0x15);
+        assert_eq!(header.command_code, CommandCode::GetEndpointID);
+    }
+
+    #[test]
+    fn test_mctp_control_header_decode_all_flags() {
+        let buffer = [0xFF, 0x03]; // request=1, datagram=1, instance_id=0x3F, cmd=0x03
+
+        let result = MctpControlHeader::decode(&buffer);
+
+        assert!(result.is_ok());
+        let header = result.unwrap();
+        assert!(header.request);
+        assert!(header.datagram);
+        assert_eq!(header.instance_id, 0x3F);
+        assert_eq!(header.command_code, CommandCode::GetEndpointUUID);
+    }
+
+    #[test]
+    fn test_mctp_control_header_decode_no_flags() {
+        let buffer = [0x00, 0x01]; // All flags false, cmd=0x01
+
+        let result = MctpControlHeader::decode(&buffer);
+
+        assert!(result.is_ok());
+        let header = result.unwrap();
+        assert!(!header.request);
+        assert!(!header.datagram);
+        assert_eq!(header.instance_id, 0x00);
+        assert_eq!(header.command_code, CommandCode::SetEndpointID);
+    }
+
+    #[test]
+    fn test_mctp_control_header_decode_buffer_too_short() {
+        let buffer = [0x95]; // Only 1 byte
+
+        let result = MctpControlHeader::decode(&buffer);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), MctpCodecError::InvalidData);
+    }
+
+    #[test]
+    fn test_mctp_control_header_decode_unknown_command() {
+        let buffer = [0x80, 0xFF]; // request=1, datagram=0, instance_id=0, unknown cmd
+
+        let result = MctpControlHeader::decode(&buffer);
+
+        assert!(result.is_ok());
+        let header = result.unwrap();
+        assert!(header.request);
+        assert!(!header.datagram);
+        assert_eq!(header.instance_id, 0x00);
+        assert_eq!(header.command_code, CommandCode::TransportSpecific(0xFF));
+    }
+
+    #[test]
+    fn test_mctp_control_header_round_trip() {
+        let original = MctpControlHeader::new(true, true, 0x2A, CommandCode::GetMCTPVersionSupport);
+
+        let mut buffer = [0u8; 4];
+        let encode_result = original.encode(&mut buffer);
+        assert!(encode_result.is_ok());
+
+        let decode_result = MctpControlHeader::decode(&buffer);
+        assert!(decode_result.is_ok());
+
+        let decoded = decode_result.unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_mctp_control_header_instance_id_boundary() {
+        // Test maximum valid instance_id (6 bits = 0x3F)
+        let header = MctpControlHeader::new(false, false, 0x3F, CommandCode::GetEndpointID);
+
+        let mut buffer = [0u8; 4];
+        let encode_result = header.encode(&mut buffer);
+        assert!(encode_result.is_ok());
+
+        let decode_result = MctpControlHeader::decode(&buffer);
+        assert!(decode_result.is_ok());
+
+        let decoded = decode_result.unwrap();
+        assert_eq!(decoded.instance_id, 0x3F);
+    }
+
+    #[test]
+    fn test_mctp_control_header_various_commands() {
+        let test_cases = vec![
+            CommandCode::SetEndpointID,
+            CommandCode::GetEndpointID,
+            CommandCode::GetEndpointUUID,
+            CommandCode::GetMCTPVersionSupport,
+            CommandCode::GetMessageTypeSupport,
+            CommandCode::ResolveEndpointID,
+            CommandCode::QueryHop,
+            CommandCode::TransportSpecific(0xF5),
+            CommandCode::Unknown(0x42),
+        ];
+
+        for cmd in test_cases {
+            let header = MctpControlHeader::new(true, false, 0x10, cmd);
+
+            let mut buffer = [0u8; 4];
+            let encode_result = header.encode(&mut buffer);
+            assert!(encode_result.is_ok());
+
+            let decode_result = MctpControlHeader::decode(&buffer);
+            assert!(decode_result.is_ok());
+
+            let decoded = decode_result.unwrap();
+            assert_eq!(decoded.command_code, cmd);
+        }
+    }
+
+    #[test]
+    fn test_mctp_control_header_min_size_constant() {
+        assert_eq!(MctpControlHeader::MCTP_CODEC_MIN_SIZE, 2);
+    }
+
+    #[test]
+    fn test_mctp_message_type_from_u8() {
+        // Test all defined variants
+        assert_eq!(MctpMessageType::from(0x00), MctpMessageType::Control);
+        assert_eq!(MctpMessageType::from(0x01), MctpMessageType::Pldm);
+        assert_eq!(MctpMessageType::from(0x02), MctpMessageType::NcSi);
+        assert_eq!(MctpMessageType::from(0x03), MctpMessageType::Ethernet);
+        assert_eq!(MctpMessageType::from(0x04), MctpMessageType::NvmeManagement);
+        assert_eq!(MctpMessageType::from(0x05), MctpMessageType::Spdm);
+        assert_eq!(MctpMessageType::from(0x7E), MctpMessageType::PciVdm);
+        assert_eq!(MctpMessageType::from(0x7F), MctpMessageType::IanaVdm);
+        assert_eq!(MctpMessageType::from(0xFF), MctpMessageType::Mctp);
+
+        // Test Other variant for undefined values
+        assert_eq!(MctpMessageType::from(0x42), MctpMessageType::Other(0x42));
+        assert_eq!(MctpMessageType::from(0x80), MctpMessageType::Other(0x80));
+        assert_eq!(MctpMessageType::from(0x10), MctpMessageType::Other(0x10));
+    }
+
+    #[test]
+    fn test_mctp_message_type_to_u8() {
+        // Test all defined variants
+        assert_eq!(u8::from(MctpMessageType::Control), 0x00);
+        assert_eq!(u8::from(MctpMessageType::Pldm), 0x01);
+        assert_eq!(u8::from(MctpMessageType::NcSi), 0x02);
+        assert_eq!(u8::from(MctpMessageType::Ethernet), 0x03);
+        assert_eq!(u8::from(MctpMessageType::NvmeManagement), 0x04);
+        assert_eq!(u8::from(MctpMessageType::Spdm), 0x05);
+        assert_eq!(u8::from(MctpMessageType::PciVdm), 0x7E);
+        assert_eq!(u8::from(MctpMessageType::IanaVdm), 0x7F);
+        assert_eq!(u8::from(MctpMessageType::Mctp), 0xFF);
+
+        // Test Other variant
+        assert_eq!(u8::from(MctpMessageType::Other(0x42)), 0x42);
+        assert_eq!(u8::from(MctpMessageType::Other(0x99)), 0x99);
+    }
+
+    #[test]
+    fn test_mctp_message_type_round_trip_u8() {
+        // Test round-trip conversions for all defined values
+        let test_values = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x7E, 0x7F, 0xFF];
+
+        for value in test_values {
+            let msg_type = MctpMessageType::from(value);
+            let back_to_u8 = u8::from(msg_type);
+            assert_eq!(value, back_to_u8);
+        }
+
+        // Test round-trip for Other variants
+        let other_values = vec![0x42, 0x80, 0x10, 0x20, 0x60, 0x90];
+        for value in other_values {
+            let msg_type = MctpMessageType::from(value);
+            let back_to_u8 = u8::from(msg_type);
+            assert_eq!(value, back_to_u8);
+        }
+    }
+
+    #[test]
+    fn test_mctp_message_type_to_mctp_msgtype() {
+        // Test conversion to mctp::MsgType
+        let control_type = MctpMessageType::Control;
+        let mctp_msg_type: mctp::MsgType = control_type.into();
+        assert_eq!(mctp_msg_type.0, 0x00);
+
+        let pldm_type = MctpMessageType::Pldm;
+        let mctp_msg_type: mctp::MsgType = pldm_type.into();
+        assert_eq!(mctp_msg_type.0, 0x01);
+
+        let other_type = MctpMessageType::Other(0x42);
+        let mctp_msg_type: mctp::MsgType = other_type.into();
+        assert_eq!(mctp_msg_type.0, 0x42);
+    }
+
+    #[test]
+    fn test_mctp_msgtype_to_message_type() {
+        // Test conversion from mctp::MsgType
+        let mctp_msg_type = mctp::MsgType(0x00);
+        let msg_type = MctpMessageType::from(mctp_msg_type);
+        assert_eq!(msg_type, MctpMessageType::Control);
+
+        let mctp_msg_type = mctp::MsgType(0x7F);
+        let msg_type = MctpMessageType::from(mctp_msg_type);
+        assert_eq!(msg_type, MctpMessageType::IanaVdm);
+
+        let mctp_msg_type = mctp::MsgType(0x42);
+        let msg_type = MctpMessageType::from(mctp_msg_type);
+        assert_eq!(msg_type, MctpMessageType::Other(0x42));
+    }
+
+    #[test]
+    fn test_mctp_message_type_round_trip_mctp_msgtype() {
+        // Test round-trip conversion through mctp::MsgType
+        let test_types = vec![
+            MctpMessageType::Control,
+            MctpMessageType::Pldm,
+            MctpMessageType::NcSi,
+            MctpMessageType::Ethernet,
+            MctpMessageType::NvmeManagement,
+            MctpMessageType::Spdm,
+            MctpMessageType::PciVdm,
+            MctpMessageType::IanaVdm,
+            MctpMessageType::Mctp,
+            MctpMessageType::Other(0x42),
+            MctpMessageType::Other(0x99),
+        ];
+
+        for original_type in test_types {
+            let mctp_msg_type: mctp::MsgType = original_type.into();
+            let back_to_msg_type = MctpMessageType::from(mctp_msg_type);
+            assert_eq!(original_type, back_to_msg_type);
+        }
+    }
+
+    #[test]
+    fn test_mctp_message_type_edge_cases() {
+        // Test boundary values
+        assert_eq!(MctpMessageType::from(0x00), MctpMessageType::Control);
+        assert_eq!(MctpMessageType::from(0xFF), MctpMessageType::Mctp);
+
+        // Test values just before and after defined ranges
+        assert_eq!(MctpMessageType::from(0x06), MctpMessageType::Other(0x06));
+        assert_eq!(MctpMessageType::from(0x7D), MctpMessageType::Other(0x7D));
+        assert_eq!(MctpMessageType::from(0xFE), MctpMessageType::Other(0xFE));
+    }
+
+    #[test]
+    fn test_set_endpoint_id_response_constructor() {
+        let eid = Eid::new_normal(20).unwrap();
+        let response = SetEndpointIdResponse::new(
+            CompletionCode::Success,
+            EidAssignmentStatus::Accepted,
+            EidAllocationStatus::NoEidPoolUsed,
+            eid,
+            5,
+        );
+        assert_eq!(response.completion_code, CompletionCode::Success);
+        assert_eq!(response.eid_assignment_status, EidAssignmentStatus::Accepted);
+        assert_eq!(response.eid_allocation_status, EidAllocationStatus::NoEidPoolUsed);
+        assert_eq!(response.eid_setting, eid);
+        assert_eq!(response.eid_pool_size, 5);
+    }
+
+    #[test]
+    fn test_get_endpoint_id_response_constructor() {
+        let eid = Eid::new_normal(30).unwrap();
+        let response = GetEndpointIDResponse::new(
+            CompletionCode::Success,
+            eid,
+            EndpointType::BusOwnerOrBridge,
+            EidType::StaticEid,
+            42,
+        );
+        assert_eq!(response.completion_code, CompletionCode::Success);
+        assert_eq!(response.eid, eid);
+        assert_eq!(response.endpoint_type, EndpointType::BusOwnerOrBridge);
+        assert_eq!(response.eid_type, EidType::StaticEid);
+        assert_eq!(response.transport_specific_information, 42);
+    }
+
+    #[test]
+    fn test_get_mctp_version_support_request_constructor() {
+        let request = GetMCTPVersionSupportRequest::new(MctpMessageType::Pldm);
+        assert_eq!(request.mctp_message_type, MctpMessageType::Pldm);
+    }
+
+    #[test]
+    fn test_get_mctp_version_support_response_constructor() {
+        let version_codes = &[1, 0, 0, 0, 2, 0, 0, 0];
+        let response = GetMCTPVersionSupportResponse::new(CompletionCode::Success, version_codes);
+        assert_eq!(response.completion_code, CompletionCode::Success);
+        assert_eq!(response.version_count, 2);
+        assert_eq!(response.version_codes, version_codes);
+    }
+
+    #[test]
+    fn test_get_mctp_message_type_support_response_constructor() {
+        let message_types = &[0x00, 0x01, 0x02];
+        let response = GetMctpMessageTypeSupportResponse::new(CompletionCode::Success, message_types);
+        assert_eq!(response.completion_code, CompletionCode::Success);
+        assert_eq!(response.message_type_count, 3);
+        assert_eq!(response.message_types, message_types);
+    }
+
+    #[test]
+    fn test_resolve_endpoint_id_request_constructor() {
+        let eid = Eid::new_normal(40).unwrap();
+        let request = ResolveEndpointIDRequest::new(eid);
+        assert_eq!(request.endpoint_id, eid);
+    }
+
+    #[test]
+    fn test_resolve_endpoint_id_response_constructor() {
+        let bridge_eid = Eid::new_normal(50).unwrap();
+        let physical_address = [1, 2, 3, 4];
+        let response = ResolveEndpointIDResponse::<4>::new(
+            CompletionCode::Success,
+            bridge_eid,
+            physical_address,
+        );
+        assert_eq!(response.completion_code, CompletionCode::Success);
+        assert_eq!(response.bridge_endpoint_id, bridge_eid);
+        assert_eq!(response.physical_address, physical_address);
+    }
+
+    // Tests for error constructors
+    #[test]
+    fn test_set_endpoint_id_response_new_err() {
+        let response = SetEndpointIdResponse::new_err(CompletionCode::Error);
+        assert_eq!(response.completion_code, CompletionCode::Error);
+        assert_eq!(response.eid_assignment_status, EidAssignmentStatus::Rejected);
+        assert_eq!(response.eid_allocation_status, EidAllocationStatus::NoEidPoolUsed);
+        assert_eq!(response.eid_setting, Eid(0));
+        assert_eq!(response.eid_pool_size, 0);
+    }
+
+    #[test]
+    fn test_get_endpoint_id_response_new_err() {
+        let response = GetEndpointIDResponse::new_err(CompletionCode::ErrorInvalidData);
+        assert_eq!(response.completion_code, CompletionCode::ErrorInvalidData);
+        assert_eq!(response.eid, Eid(0));
+        assert_eq!(response.endpoint_type, EndpointType::SimpleEndpoint);
+        assert_eq!(response.eid_type, EidType::DynamicEid);
+        assert_eq!(response.transport_specific_information, 0);
+    }
+
+    #[test]
+    fn test_get_mctp_version_support_response_new_err() {
+        let response = GetMCTPVersionSupportResponse::new_err(CompletionCode::ErrorUnsupportedCmd);
+        assert_eq!(response.completion_code, CompletionCode::ErrorUnsupportedCmd);
+        assert_eq!(response.version_count, 0);
+        assert!(response.version_codes.is_empty());
+    }
+
+    #[test]
+    fn test_get_mctp_message_type_support_response_new_err() {
+        let response = GetMctpMessageTypeSupportResponse::new_err(CompletionCode::ErrorNotReady);
+        assert_eq!(response.completion_code, CompletionCode::ErrorNotReady);
+        assert_eq!(response.message_type_count, 0);
+        assert!(response.message_types.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_endpoint_id_response_new_err() {
+        let response = ResolveEndpointIDResponse::<6>::new_err(CompletionCode::ErrorInvalidLength);
+        assert_eq!(response.completion_code, CompletionCode::ErrorInvalidLength);
+        assert_eq!(response.bridge_endpoint_id, Eid(0));
+        assert_eq!(response.physical_address, [0; 6]);
+    }
+
+    // Encode/decode round-trip tests
+    #[test]
+    fn test_set_endpoint_id_request_round_trip() {
+        let eid = Eid::new_normal(15).unwrap();
+        let operation = SetEndpointIDOperation::ForceEid(eid);
+        let original = SetEndpointIdRequest(operation);
+
+        let mut buffer = [0u8; 10];
+        let encoded_size = original.encode(&mut buffer).unwrap();
+        let decoded = SetEndpointIdRequest::decode(
+            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
+        ).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_set_endpoint_id_response_round_trip() {
+        let eid = Eid::new_normal(25).unwrap();
+        let original = SetEndpointIdResponse::new(
+            CompletionCode::Success,
+            EidAssignmentStatus::Accepted,
+            EidAllocationStatus::EidPoolAllcotationEstablished,
+            eid,
+            8,
+        );
+
+        let mut buffer = [0u8; 10];
+        let encoded_size = original.encode(&mut buffer).unwrap();
+        let decoded = SetEndpointIdResponse::decode(
+            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
+        ).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_get_endpoint_id_response_round_trip() {
+        let eid = Eid::new_normal(35).unwrap();
+        let original = GetEndpointIDResponse::new(
+            CompletionCode::Success,
+            eid,
+            EndpointType::BusOwnerOrBridge,
+            EidType::StaticEidConfigured,
+            123,
+        );
+
+        let mut buffer = [0u8; 10];
+        let encoded_size = original.encode(&mut buffer).unwrap();
+        let decoded = GetEndpointIDResponse::decode(
+            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
+        ).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_get_mctp_version_support_request_round_trip() {
+        let original = GetMCTPVersionSupportRequest::new(MctpMessageType::Spdm);
+
+        let mut buffer = [0u8; 10];
+        let encoded_size = original.encode(&mut buffer).unwrap();
+        let decoded = GetMCTPVersionSupportRequest::decode(
+            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
+        ).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_get_mctp_version_support_response_round_trip() {
+        let version_codes = &[1, 0, 0, 0, 3, 0, 0, 0, 5, 0, 0, 0];
+        let original = GetMCTPVersionSupportResponse::new(CompletionCode::Success, version_codes);
+
+        let mut buffer = [0u8; 50];
+        let encoded_size = original.encode(&mut buffer).unwrap();
+        let decoded = GetMCTPVersionSupportResponse::decode(
+            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
+        ).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_get_mctp_message_type_support_response_round_trip() {
+        let message_types = &[0x00, 0x01, 0x05, 0x7E];
+        let original = GetMctpMessageTypeSupportResponse::new(CompletionCode::Success, message_types);
+
+        let mut buffer = [0u8; 20];
+        let encoded_size = original.encode(&mut buffer).unwrap();
+        let decoded = GetMctpMessageTypeSupportResponse::decode(
+            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
+        ).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_resolve_endpoint_id_request_round_trip() {
+        let eid = Eid::new_normal(45).unwrap();
+        let original = ResolveEndpointIDRequest::new(eid);
+
+        let mut buffer = [0u8; 10];
+        let encoded_size = original.encode(&mut buffer).unwrap();
+        let decoded = ResolveEndpointIDRequest::decode(
+            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
+        ).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_resolve_endpoint_id_response_round_trip() {
+        let bridge_eid = Eid::new_normal(55).unwrap();
+        let physical_address = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        let original = ResolveEndpointIDResponse::new(
+            CompletionCode::Success,
+            bridge_eid,
+            physical_address,
+        );
+
+        let mut buffer = [0u8; 20];
+        let encoded_size = original.encode(&mut buffer).unwrap();
+        let decoded = ResolveEndpointIDResponse::<6>::decode(
+            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
+        ).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_mctp_control_message_round_trip() {
+        let header = MctpControlHeader::new(true, false, 0x20, CommandCode::GetEndpointUUID);
+        let message_body = &[0x12, 0x34, 0x56, 0x78];
+        let original = MctpControlMessage::new(header, message_body);
+
+        let mut buffer = [0u8; 20];
+        let encoded_size = original.encode(&mut buffer).unwrap();
+        let decoded = MctpControlMessage::decode(
+            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
+        ).unwrap();
+
+        assert_eq!(original, decoded);
+    }
+
+    // Test error cases for encode/decode
+    #[test]
+    fn test_encode_decode_error_cases() {
+        // Test buffer too short for SetEndpointIdRequest
+        let eid = Eid::new_normal(10).unwrap();
+        let operation = SetEndpointIDOperation::SetEid(eid);
+        let request = SetEndpointIdRequest(operation);
+
+        let mut small_buffer = [0u8; 1];
+        assert_eq!(request.encode(&mut small_buffer), Err(MctpCodecError::BufferTooShort));
+
+        // Test invalid data for decode
+        let invalid_buffer = [0xFF]; // Too short
+        assert_eq!(SetEndpointIdRequest::decode(invalid_buffer.as_slice()), Err(MctpCodecError::BufferTooShort));
+    }
 }
