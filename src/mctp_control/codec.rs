@@ -17,13 +17,21 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 //As of DSP0235 1.3.3 Line 1823: "11.6 MCTP control message transmission unit size"
 const MCTP_CONTROL_MTU: usize = 64;
 
+/// Errors that can occur when encoding/decoding MCTP Control messages
 #[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub enum MctpCodecError {
+    /// The provided buffer is to small
     BufferTooShort,
+    /// Operation is unsupported for this type
     Unsupported,
+    /// Encountered invalid data (while decoding)
     InvalidData,
+    /// Internal error while encoding/decoding a MCTP Control message
+    ///
+    /// (Feel free to file a bug report)
     InternalError,
+    /// The provided buffer if of the wrong size for the type.
     UnsupportedBufferSize,
 }
 

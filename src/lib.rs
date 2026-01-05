@@ -16,9 +16,12 @@
 //!
 //! It uses the [mctp-estack](https://docs.rs/mctp-estack/latest/mctp_estack/) and re-exports most
 //! parts of it.
+//!
+//! In addition it provides a codec for the _MCTP Control Protocol_.
+
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
-// #![deny(missing_docs)]
+#![deny(missing_docs)]
 #![deny(clippy::missing_panics_doc)]
 #![deny(clippy::panic)]
 #![deny(clippy::panicking_overflow_checks)]

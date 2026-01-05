@@ -12,32 +12,51 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! MCTP Control Protocol
+//!
+//! This module enables the encoding/decoding of MCTP Control Protocol messages
+//! by providing datatypes that implement the [codec](MctpCodec).
+//!
+//! The [MctpControlMessage] is the topmost datatype for encoding and decoding
+//! Control Protocol messages.
+
 #![allow(unused)]
 
 use mctp::{Eid, Error};
 
-pub mod codec;
-use crate::mctp_control::codec::{MctpCodec, MctpCodecError};
+mod codec;
+pub use crate::mctp_control::codec::{MctpCodec, MctpCodecError};
 
 /// A `Result` with a MCTP control completion code as error.
 pub type ControlResult<T> = core::result::Result<T, CompletionCode>;
 
-/// MCTP control message completion code.
+/// MCTP control message completion codes
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-
 pub enum CompletionCode {
+    /// The Request was accepted and completed normally
     Success,
+    /// Generic failure message
+    ///
+    /// (Not to be used when a more specific result code applies.)
     Error,
+    /// The packet payload contained invalid data or an illegal parameter value
     ErrorInvalidData,
+    /// The message length was invalid
     ErrorInvalidLength,
+    /// The Receiver is in a transient state where it is not ready to receive the corresponding message
     ErrorNotReady,
+    /// The command code field of the received message is unspecified or not supported on this endpoint
+    ///
+    /// This completion code shall be returned for any unsupported
+    /// command values received in MCTP control Request messages.
     ErrorUnsupportedCmd,
-    /// 0x80-0xff
-    /// Command-specific completion code with a custom value.
+    /// Command-specific completion code with a custom value
+    /// (`0x80`-`0xff`)
     ///
     /// This variant represents completion codes that are specific to individual
     /// MCTP control commands and carries the raw completion code value.
     CommandSpecific(u8),
+    /// Reserved
     Other(u8),
 }
 
@@ -72,29 +91,68 @@ impl From<CompletionCode> for u8 {
     }
 }
 
-/// MCTP control command code.
-#[allow(missing_docs)]
+/// MCTP control command codes
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum CommandCode {
+    /// Assigns an EID to the endpoint at the given physical address
     SetEndpointID,
+    /// Returns the EID presently assigned to an endpoint
+    ///
+    /// Also returns information about what type the
+    /// endpoint is and its level of use of static EIDs.
     GetEndpointID,
+    /// Retrieves a per-device unique UUID associated with the endpoint
     GetEndpointUUID,
+    /// Lists which versions of the MCTP control protocol are supported on an endpoint
     GetMCTPVersionSupport,
+    /// Lists the message types that an endpoint supports
     GetMessageTypeSupport,
+    /// Used to discover an MCTP endpoint’s vendor- specific MCTP extensions and capabilities
     GetVendorDefinedMessageSupport,
+    /// Used to get the physical address associated with a given EID
     ResolveEndpointID,
+    /// Used by the bus owner to allocate a pool of EIDs to an MCTP bridge
     AllocateEndpointIDs,
+    /// Used by the bus owner to extend or update the routing information
+    /// that is maintained by an MCTP bridge
     RoutingInformationUpdate,
+    /// Used to request an MCTP bridge to return data
+    /// corresponding to its present routing table entries
     GetRoutingTableEntries,
+    /// Used to direct endpoints to clear their “discovered” flags
+    /// to enable them to respond to the Endpoint Discovery command
     PrepareforEndpointDiscovery,
+    /// Used to notify the bus owner that an MCTP device has become available on the bus
     DiscoveryNotify,
+    /// Used to discover what bridges, if any, are in the path to a given target endpoint
+    /// and what transmission unit sizes the bridges will pass
+    /// for a given message type when routing to the target endpoint
     QueryHop,
+    /// Used by endpoints to find another endpoint
+    /// matching an endpoint that uses a specific UUID
     ResolveUUID,
+    /// Used to discover the data rate limit settings
+    /// of the given target for incoming messages
     QueryRateRimit,
+    /// Used to request the allowed transmit data rate limit
+    /// for the given endpoint for outgoing messages
     RequestTXRateLimit,
+    /// Used to update the receiving side on change to the transmit data rate
+    /// which was not requested by the receiver
     UpdateRateLimit,
+    /// Used to discover the existing device MCTP interfaces
     QuerySupportedInterfaces,
+    /// This range of control command numbers is reserved for definition by individual MCTP Transport binding specifications
+    ///
+    /// Transport specific commands are intended to be used as needed
+    /// for setup and configuration of MCTP on a given media.
+    /// A particular transport specific command number many have different definitions
+    /// depending on the binding specification.
+    /// Transport specific commands shall only be addressed to endpoints on the same medium.
+    /// A bridge is allowed to block transport specific commands from being bridged to different media.
+    /// The general format of Transport specific messages is specified in clause 12.18 (DSP0236 1.3.3).
     TransportSpecific(u8),
+    /// Unknown / Reserved
     Unknown(u8),
 }
 
@@ -153,15 +211,36 @@ impl From<CommandCode> for u8 {
     }
 }
 
+/// MCTP Control Protocol message header
+///
+/// Represents the common fields of request and response messages.
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub struct MctpControlHeader {
+    /// Request bit
+    ///
+    /// This bit is used to help differentiate between MCTP control Request messages and other message classes.
     pub request: bool,
+    /// Datagram bit
+    ///
+    /// This bit is used to indicate whether the Instance ID field
+    /// is being used for tracking and matching requests and responses
+    /// or is just being used to identify a retransmitted message.
     pub datagram: bool,
+    /// The Instance ID field is used to identify new instances of an MCTP control
+    /// Request or Datagram to differentiate new requests or datagrams that are
+    /// sent to a given message terminus from retried messages that are sent to
+    /// the same message terminus. The Instance ID field is also used to match up
+    /// a particular instance of an MCTP Response message with the
+    /// corresponding instance of an MCTP Request message.
     pub instance_id: u8,
+    /// For Request messages, this field is a command code
+    /// indicating the type of MCTP operation the packet is requesting.
+    /// The Command Code that is sent in a Request shall be returned in the corresponding Response.
     pub command_code: CommandCode,
 }
 
 impl MctpControlHeader {
+    /// Create a new MCTP Control Protocol header
     pub fn new(request: bool, datagram: bool, instance_id: u8, command_code: CommandCode) -> Self {
         Self {
             request,
@@ -206,13 +285,16 @@ impl MctpCodec<'_> for MctpControlHeader {
     const MCTP_CODEC_MIN_SIZE: usize = 2;
 }
 
+/// A MCTP Control Protocol message consisting of a header and body
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
+#[allow(missing_docs)]
 pub struct MctpControlMessage<'a> {
     pub control_header: MctpControlHeader,
     pub message_body: &'a [u8],
 }
 
 impl<'a> MctpControlMessage<'a> {
+    #[allow(missing_docs)]
     pub fn new(control_header: MctpControlHeader, message_body: &'a [u8]) -> Self {
         Self {
             control_header,
@@ -260,11 +342,40 @@ impl<'a> MctpCodec<'a> for MctpControlMessage<'a> {
     const MCTP_CODEC_MIN_SIZE: usize = 2;
 }
 
+/// Operations supported by the [SetEndpointIdRequest].
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub enum SetEndpointIDOperation {
+    /// Submit an EID for assignment
+    ///
+    /// The given EID will be accepted conditional
+    /// upon which bus the device received the EID from.
+    /// A device where the endpoint is only reached through one bus
+    /// shall always accept this operation (provided the EID value is legal).
     SetEid(Eid),
+    /// Force EID assignment
+    ///
+    /// The given EID will be accepted regardless of whether
+    /// the EID was already assigned through another bus.
+    /// Note that if the endpoint is forcing,
+    /// the EID assignment changes which bus is being tracked
+    /// as the originator of the Set Endpoint ID command.
+    /// A device where the endpoint is only reached through one bus
+    /// shall always accept this operation (provided the EID value is legal),
+    /// in which case the Set EID and Force EID operations are equivalent.
     ForceEid(Eid),
+    /// This option only applies to endpoints that support static EIDs
+    ///
+    /// If static EIDs are supported, the endpoint shall restore the EID
+    /// the statically configured EID value. The EID value in byte 2 shall be ignored.
+    /// An [ErrorInvalidData](CompletionCode::ErrorInvalidData) completion code shall be returned
+    /// if this operation is not supported.
     ResetEid,
+    /// Set Discovered flag to the “discovered” state only
+    ///
+    /// Do not change present EID setting. The EID value in byte 2 shall be ignored.
+    /// Note that Discovered flag is only used for some physical transport bindings.
+    /// An [ErrorInvalidData](CompletionCode::ErrorInvalidData) completion code shall be returned if this operation is selected
+    /// and the particular transport binding does not support a Discovered flag.
     SetDiscoveredFlag,
 }
 
@@ -309,10 +420,14 @@ impl From<SetEndpointIdRequest> for (SetEndpointIDOperation) {
     }
 }
 
+/// The Set Endpoint ID command assigns an EID to an endpoint and sets its Discovered Flag
+///
+/// This command should only be issued by a bus owner to assign an EID to an endpoint at a particular physical address.
 #[derive(PartialEq, Eq, Clone, Hash, Debug)]
 pub struct SetEndpointIdRequest(pub SetEndpointIDOperation);
 
 impl SetEndpointIdRequest {
+    #[allow(missing_docs)]
     pub fn new(operation: SetEndpointIDOperation) -> Self {
         Self(operation)
     }
@@ -345,9 +460,12 @@ impl MctpCodec<'_> for SetEndpointIdRequest {
     const MCTP_CODEC_MIN_SIZE: usize = 2;
 }
 
+/// EID assignment status of a [SetEndpointIdResponse]
 #[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
 pub enum EidAssignmentStatus {
+    /// EID assignment accepted
     Accepted,
+    /// EID assignment rejected
     Rejected,
 }
 
@@ -373,10 +491,14 @@ impl From<EidAssignmentStatus> for u8 {
     }
 }
 
+/// EID allocation status of a [SetEndpointIdResponse]
 #[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
 pub enum EidAllocationStatus {
+    /// Device does not use an EID pool
     NoEidPoolUsed,
+    /// Endpoint requires EID pool allocation
     EidPoolAllcotationRequired,
+    /// Endpoint uses an EID pool that already received an allocation for that pool
     EidPoolAllcotationEstablished,
 }
 
@@ -404,7 +526,9 @@ impl From<EidAllocationStatus> for u8 {
     }
 }
 
+/// Response to a [SetEndpointIdRequest]
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
+#[allow(missing_docs)]
 pub struct SetEndpointIdResponse {
     pub completion_code: CompletionCode,
 
@@ -412,12 +536,19 @@ pub struct SetEndpointIdResponse {
 
     pub eid_allocation_status: EidAllocationStatus,
 
+    /// If the EID setting was accepted, this value will match the EID passed in the request.
+    /// Otherwise, this value returns the present EID setting.
     pub eid_setting: Eid,
 
+    /// This is the size of the dynamic EID pool that the bridge can use to assign EIDs or EID pools to other endpoints or bridges.
+    /// It does not include the count of any additional static EIDs that the bridge may maintain.
+    /// Note that a bridge always returns its pool size regardless of whether it has already received an allocation.
+    /// `0x00` = no dynamic EID pool.
     pub eid_pool_size: u8,
 }
 
 impl SetEndpointIdResponse {
+    #[allow(missing_docs)]
     pub fn new(
         completion_code: CompletionCode,
         eid_assignment_status: EidAssignmentStatus,
@@ -504,7 +635,9 @@ impl MctpCodec<'_> for SetEndpointIdResponse {
     const MCTP_CODEC_MIN_SIZE: usize = 4;
 }
 
+/// The endpoint type reported in a [GetEndpointIDResponse]
 #[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
+#[allow(missing_docs)]
 pub enum EndpointType {
     SimpleEndpoint,
     BusOwnerOrBridge,
@@ -531,11 +664,31 @@ impl TryFrom<u8> for EndpointType {
     }
 }
 
+/// The EID type reported in a [GetEndpointIDResponse]
 #[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
 pub enum EidType {
+    /// The endpoint uses a dynamic EID only.
     DynamicEid,
+    /// Static EID supported
+    ///
+    /// The endpoint was configured with a static EID. The EID returned by this
+    /// command reflects the present setting and may or may not match the
+    /// static EID value.
+    ///
+    /// The _StaticEidConfigured_ and _StaticEidAvailable_ status return values are optional.
+    /// If provided, they shall be supported as a pair in place of the static EID support status return.
+    /// It is recommended that this be implemented if the Reset EID option in the
+    /// Set Endpoint ID command is supported.
     StaticEid,
+    /// Present EID matches static EID.
+    ///
+    /// The endpoint has been configured with a static EID.
+    /// The present value is the same as the static value.
     StaticEidConfigured,
+    /// Present EID does not match static EID.
+    ///
+    /// Endpoint has been configured with a static EID.
+    /// The present value is different than the static value.
     StaticEidAvailable,
 }
 
@@ -564,9 +717,20 @@ impl TryFrom<u8> for EidType {
     }
 }
 
+/// The _Get Endpoint ID command_ returns the EID for an endpoin
+///
+/// This command is typically issued only by a bus owner
+/// to retrieve the EID that was assigned to a particular physical address.
+/// Thus, the destination EID in the request will typically be
+/// set to the special Physical Addressing Only EID value.
+/// Note that the Request has no body data.
 #[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
+#[allow(missing_docs)]
 pub struct GetEndpointIDResponse {
     completion_code: CompletionCode,
+    /// The Endpoint ID that was asked for
+    ///
+    /// `0x00` = EID not yet assigned.
     eid: Eid,
     endpoint_type: EndpointType,
     eid_type: EidType,
@@ -680,15 +844,27 @@ impl MctpCodec<'_> for GetEndpointIDResponse {
 #[non_exhaustive]
 #[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
 pub enum MctpMessageType {
+    /// MCTP Control Protocol
     Control,
+    /// Platform Level Data Model over MCTP
     Pldm,
+    /// NC-SI Contol traffic over MCTP
     NcSi,
+    /// Ethernet over MCTP
     Ethernet,
+    /// NVM Express (NVMe) Management Messages over MCTP
     NvmeManagement,
+    /// Security Protocol and Data Model (SPDM) over MCTP
     Spdm,
+    /// Vendor Defined Message type used to support VDMs where the vendor is identified using a PCI-based vendor ID
     PciVdm,
+    /// Vendor Defined Message type used to support VDMs where the vendor is identified using an IANA-based vendor ID
     IanaVdm,
+    /// Type representing the MCTP base protocol itself
+    ///
+    /// This is used by the Get MCTP Version support command to query the MCTP version itself.
     Mctp,
+    /// Reserved for all other codes not explicitly defined
     Other(u8),
 }
 
@@ -738,12 +914,42 @@ impl From<mctp::MsgType> for MctpMessageType {
     }
 }
 
+/// This command can be used to retrieve the supported MCTP and message type versions
+///
+/// More than one version number can be returned for a given message type by the Get MCTP Version Support command.
+/// This enables the command to be used for reporting different levels of compatibility and backward compatibility with different specification versions.
+/// The individual specifications for the given message type define the requirements for which versions number values should be used for that message type.
+/// Those documents define which earlier version numbers, if any, shall also be listed.
+///
+/// The command returns a completion code that indicates whether the message type number passed in the request is supported or not.
+/// This enables the command to also be used to query the endpoint for whether it supports a given message type.
 #[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
-struct GetMCTPVersionSupportRequest {
+pub struct GetMCTPVersionSupportRequest {
+    /// The message type number to retrieve version information for
+    ///
+    /// `0xFF` = return MCTP base specification version information.
+    ///
+    /// `0x7E`, `0x7F` = unspecified. Support of this command for vendor-defined
+    /// message types is vendor implementation-specific and
+    /// considered outside the scope of this specification.
+    ///
+    /// `0x00` = return MCTP control protocol message version
+    /// information.
+    ///
+    /// `0x01` = return version of DSP0241
+    ///
+    /// `0x02`,`0x03` = return version of DSP0261
+    ///
+    /// _Other_ = return version information for a given message type.
+    /// See MCTP ID for message type numbers. When a Message
+    /// Type Number references a binding spec, the reported
+    /// version is of the binding spec and not of the associated
+    /// base spec.
     mctp_message_type: MctpMessageType,
 }
 
 impl GetMCTPVersionSupportRequest {
+    #[allow(missing_docs)]
     pub fn new(mctp_message_type: MctpMessageType) -> Self {
         Self { mctp_message_type }
     }
@@ -766,14 +972,26 @@ impl MctpCodec<'_> for GetMCTPVersionSupportRequest {
 
     const MCTP_CODEC_MIN_SIZE: usize = 1;
 }
+
+/// Response to a [GetMCTPVersionSupportRequest]
 #[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
+#[allow(missing_docs)]
 pub struct GetMCTPVersionSupportResponse<'a> {
     pub completion_code: CompletionCode,
+    /// Version number entry count
+    ///
+    /// One-based count of 32-bit version numbers being returned by this response.
+    /// Numerically lower version numbers are returned first.
     pub version_count: u8,
+    /// Version number entries
+    ///
+    /// Refer to _DSP4004_ for the normative definition
+    /// of version numbering of DMTF specifications.
     pub version_codes: &'a [u8],
 }
 
 impl<'a> GetMCTPVersionSupportResponse<'a> {
+    /// Create a Get MCTP Version response with one or more 32-bit version number entries
     pub fn new(completion_code: CompletionCode, version_codes: &'a [u8]) -> Self {
         Self {
             completion_code,
@@ -890,14 +1108,26 @@ impl<'a> MctpCodec<'a> for GetMCTPVersionSupportResponse<'a> {
     const MCTP_CODEC_MIN_SIZE: usize = 2 + 4 * 8;
 }
 
+/// The Get Message Type Support command enables management controllers
+/// to discover the MCTP control protocol capabilities supported by other MCTP endpoints
+///
+/// Note that the Get Message Type support request has no body.
 #[derive(Debug, PartialEq, Eq)]
+#[allow(missing_docs)]
 pub struct GetMctpMessageTypeSupportResponse<'a> {
     pub completion_code: CompletionCode,
+    /// MCTP Message Type Count
+    ///
+    /// One-based.
     pub message_type_count: u8,
+    /// List of Message Type numbers
+    ///
+    /// One byte per number.
     pub message_types: &'a [u8],
 }
 
 impl<'a> GetMctpMessageTypeSupportResponse<'a> {
+    #[allow(missing_docs)]
     pub fn new(completion_code: CompletionCode, message_types_buffer: &'a [u8]) -> Self {
         Self {
             completion_code,
@@ -931,12 +1161,14 @@ impl<'a> GetMctpMessageTypeSupportResponse<'a> {
         }
     }
 
+    /// Get an iterator over the returned Message Types
     pub fn get_message_types_iterator(&self) -> impl Iterator<Item = MctpMessageType> + '_ {
         self.message_types
             .iter()
             .map(|&byte| MctpMessageType::from(byte))
     }
 
+    /// Try to get the Message Type at index `index`
     pub fn get_message_type(&self, index: usize) -> Option<MctpMessageType> {
         self.message_types
             .get(index)
@@ -987,8 +1219,12 @@ impl<'a> MctpCodec<'a> for GetMctpMessageTypeSupportResponse<'a> {
     }
 }
 
+/// This command is sent to the bus owner to resolve an EID into the physical address
 #[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
 struct ResolveEndpointIDRequest {
+    /// Target Endpoint ID
+    ///
+    /// This is the EID that the bus owner is being asked to resolve.
     endpoint_id: Eid,
 }
 
@@ -1011,10 +1247,26 @@ impl MctpCodec<'_> for ResolveEndpointIDRequest {
     }
 }
 
+/// Response to a [ResolveEndpointIDRequest]
 #[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
+#[allow(missing_docs)]
 struct ResolveEndpointIDResponse<const TRANSPORT_ADDRESS_LENGTH: usize> {
     completion_code: CompletionCode,
+    /// Bridge Endpoint ID
+    ///
+    /// This is the EID for the endpoint that is providing the bridging server (if any)
+    /// that is required to access the target endpoint.
+    /// If the EID being returned matches the same value as the target EID, it
+    /// indicates that there is no bridging function that is required to access the
+    /// target endpoint (that is, the target EID is local to the bus that the Resolve
+    /// Endpoint ID request was issued over).
     bridge_endpoint_id: Eid,
+    /// Physical Address
+    ///
+    /// The size of this field is dependent on the particular MCTP physical transport
+    /// binding used for the bus that this data is being provided for. The size and
+    /// format of this field is defined as part of the corresponding physical transport
+    /// binding specification.
     physical_address: [u8; TRANSPORT_ADDRESS_LENGTH],
 }
 
@@ -1413,8 +1665,14 @@ mod tests {
             5,
         );
         assert_eq!(response.completion_code, CompletionCode::Success);
-        assert_eq!(response.eid_assignment_status, EidAssignmentStatus::Accepted);
-        assert_eq!(response.eid_allocation_status, EidAllocationStatus::NoEidPoolUsed);
+        assert_eq!(
+            response.eid_assignment_status,
+            EidAssignmentStatus::Accepted
+        );
+        assert_eq!(
+            response.eid_allocation_status,
+            EidAllocationStatus::NoEidPoolUsed
+        );
         assert_eq!(response.eid_setting, eid);
         assert_eq!(response.eid_pool_size, 5);
     }
@@ -1454,7 +1712,8 @@ mod tests {
     #[test]
     fn test_get_mctp_message_type_support_response_constructor() {
         let message_types = &[0x00, 0x01, 0x02];
-        let response = GetMctpMessageTypeSupportResponse::new(CompletionCode::Success, message_types);
+        let response =
+            GetMctpMessageTypeSupportResponse::new(CompletionCode::Success, message_types);
         assert_eq!(response.completion_code, CompletionCode::Success);
         assert_eq!(response.message_type_count, 3);
         assert_eq!(response.message_types, message_types);
@@ -1486,8 +1745,14 @@ mod tests {
     fn test_set_endpoint_id_response_new_err() {
         let response = SetEndpointIdResponse::new_err(CompletionCode::Error);
         assert_eq!(response.completion_code, CompletionCode::Error);
-        assert_eq!(response.eid_assignment_status, EidAssignmentStatus::Rejected);
-        assert_eq!(response.eid_allocation_status, EidAllocationStatus::NoEidPoolUsed);
+        assert_eq!(
+            response.eid_assignment_status,
+            EidAssignmentStatus::Rejected
+        );
+        assert_eq!(
+            response.eid_allocation_status,
+            EidAllocationStatus::NoEidPoolUsed
+        );
         assert_eq!(response.eid_setting, Eid(0));
         assert_eq!(response.eid_pool_size, 0);
     }
@@ -1505,7 +1770,10 @@ mod tests {
     #[test]
     fn test_get_mctp_version_support_response_new_err() {
         let response = GetMCTPVersionSupportResponse::new_err(CompletionCode::ErrorUnsupportedCmd);
-        assert_eq!(response.completion_code, CompletionCode::ErrorUnsupportedCmd);
+        assert_eq!(
+            response.completion_code,
+            CompletionCode::ErrorUnsupportedCmd
+        );
         assert_eq!(response.version_count, 0);
         assert!(response.version_codes.is_empty());
     }
@@ -1536,8 +1804,12 @@ mod tests {
         let mut buffer = [0u8; 10];
         let encoded_size = original.encode(&mut buffer).unwrap();
         let decoded = SetEndpointIdRequest::decode(
-            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
-        ).unwrap();
+            buffer
+                .get(..encoded_size)
+                .ok_or("Buffer slice error")
+                .unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(original, decoded);
     }
@@ -1556,8 +1828,12 @@ mod tests {
         let mut buffer = [0u8; 10];
         let encoded_size = original.encode(&mut buffer).unwrap();
         let decoded = SetEndpointIdResponse::decode(
-            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
-        ).unwrap();
+            buffer
+                .get(..encoded_size)
+                .ok_or("Buffer slice error")
+                .unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(original, decoded);
     }
@@ -1576,8 +1852,12 @@ mod tests {
         let mut buffer = [0u8; 10];
         let encoded_size = original.encode(&mut buffer).unwrap();
         let decoded = GetEndpointIDResponse::decode(
-            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
-        ).unwrap();
+            buffer
+                .get(..encoded_size)
+                .ok_or("Buffer slice error")
+                .unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(original, decoded);
     }
@@ -1589,8 +1869,12 @@ mod tests {
         let mut buffer = [0u8; 10];
         let encoded_size = original.encode(&mut buffer).unwrap();
         let decoded = GetMCTPVersionSupportRequest::decode(
-            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
-        ).unwrap();
+            buffer
+                .get(..encoded_size)
+                .ok_or("Buffer slice error")
+                .unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(original, decoded);
     }
@@ -1603,8 +1887,12 @@ mod tests {
         let mut buffer = [0u8; 50];
         let encoded_size = original.encode(&mut buffer).unwrap();
         let decoded = GetMCTPVersionSupportResponse::decode(
-            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
-        ).unwrap();
+            buffer
+                .get(..encoded_size)
+                .ok_or("Buffer slice error")
+                .unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(original, decoded);
     }
@@ -1612,13 +1900,18 @@ mod tests {
     #[test]
     fn test_get_mctp_message_type_support_response_round_trip() {
         let message_types = &[0x00, 0x01, 0x05, 0x7E];
-        let original = GetMctpMessageTypeSupportResponse::new(CompletionCode::Success, message_types);
+        let original =
+            GetMctpMessageTypeSupportResponse::new(CompletionCode::Success, message_types);
 
         let mut buffer = [0u8; 20];
         let encoded_size = original.encode(&mut buffer).unwrap();
         let decoded = GetMctpMessageTypeSupportResponse::decode(
-            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
-        ).unwrap();
+            buffer
+                .get(..encoded_size)
+                .ok_or("Buffer slice error")
+                .unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(original, decoded);
     }
@@ -1631,8 +1924,12 @@ mod tests {
         let mut buffer = [0u8; 10];
         let encoded_size = original.encode(&mut buffer).unwrap();
         let decoded = ResolveEndpointIDRequest::decode(
-            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
-        ).unwrap();
+            buffer
+                .get(..encoded_size)
+                .ok_or("Buffer slice error")
+                .unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(original, decoded);
     }
@@ -1641,17 +1938,18 @@ mod tests {
     fn test_resolve_endpoint_id_response_round_trip() {
         let bridge_eid = Eid::new_normal(55).unwrap();
         let physical_address = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
-        let original = ResolveEndpointIDResponse::new(
-            CompletionCode::Success,
-            bridge_eid,
-            physical_address,
-        );
+        let original =
+            ResolveEndpointIDResponse::new(CompletionCode::Success, bridge_eid, physical_address);
 
         let mut buffer = [0u8; 20];
         let encoded_size = original.encode(&mut buffer).unwrap();
         let decoded = ResolveEndpointIDResponse::<6>::decode(
-            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
-        ).unwrap();
+            buffer
+                .get(..encoded_size)
+                .ok_or("Buffer slice error")
+                .unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(original, decoded);
     }
@@ -1665,8 +1963,12 @@ mod tests {
         let mut buffer = [0u8; 20];
         let encoded_size = original.encode(&mut buffer).unwrap();
         let decoded = MctpControlMessage::decode(
-            buffer.get(..encoded_size).ok_or("Buffer slice error").unwrap()
-        ).unwrap();
+            buffer
+                .get(..encoded_size)
+                .ok_or("Buffer slice error")
+                .unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(original, decoded);
     }
@@ -1680,10 +1982,16 @@ mod tests {
         let request = SetEndpointIdRequest(operation);
 
         let mut small_buffer = [0u8; 1];
-        assert_eq!(request.encode(&mut small_buffer), Err(MctpCodecError::BufferTooShort));
+        assert_eq!(
+            request.encode(&mut small_buffer),
+            Err(MctpCodecError::BufferTooShort)
+        );
 
         // Test invalid data for decode
         let invalid_buffer = [0xFF]; // Too short
-        assert_eq!(SetEndpointIdRequest::decode(invalid_buffer.as_slice()), Err(MctpCodecError::BufferTooShort));
+        assert_eq!(
+            SetEndpointIdRequest::decode(invalid_buffer.as_slice()),
+            Err(MctpCodecError::BufferTooShort)
+        );
     }
 }
