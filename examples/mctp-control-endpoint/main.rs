@@ -32,8 +32,8 @@ use standalone::{
 };
 
 use mctp_lib::mctp_control::{
-    CompletionCode, MctpControlHeader, SetEndpointIDOperation, SetEndpointIdRequest,
-    SetEndpointIdResponse, codec::MctpCodec,
+    CompletionCode, MctpCodec, MctpControlHeader, SetEndpointIDOperation, SetEndpointIdRequest,
+    SetEndpointIdResponse,
 };
 use mctp_lib::{Sender, mctp_control::MctpControlMessage};
 
