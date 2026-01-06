@@ -122,8 +122,15 @@ pub enum CommandCode {
     /// Used to direct endpoints to clear their “discovered” flags
     /// to enable them to respond to the Endpoint Discovery command
     PrepareforEndpointDiscovery,
+    /// Used to discover MCTP-capable devices on a bus
+    ///
+    /// (provided that another discovery mechanism
+    /// is not defined for the particular physical medium)
+    EndpointDiscovery,
     /// Used to notify the bus owner that an MCTP device has become available on the bus
     DiscoveryNotify,
+    /// Used to get the MCTP network ID
+    GetNetworkID,
     /// Used to discover what bridges, if any, are in the path to a given target endpoint
     /// and what transmission unit sizes the bridges will pass
     /// for a given message type when routing to the target endpoint
@@ -171,7 +178,9 @@ impl From<u8> for CommandCode {
             0x09 => RoutingInformationUpdate,
             0x0A => GetRoutingTableEntries,
             0x0B => PrepareforEndpointDiscovery,
+            0x0C => EndpointDiscovery,
             0x0D => DiscoveryNotify,
+            0x0E => GetNetworkID,
             0x0F => QueryHop,
             0x10 => ResolveUUID,
             0x11 => QueryRateRimit,
@@ -199,7 +208,9 @@ impl From<CommandCode> for u8 {
             RoutingInformationUpdate => 0x09,
             GetRoutingTableEntries => 0x0A,
             PrepareforEndpointDiscovery => 0x0B,
+            EndpointDiscovery => 0x0C,
             DiscoveryNotify => 0x0D,
+            GetNetworkID => 0x0E,
             QueryHop => 0x0F,
             ResolveUUID => 0x10,
             QueryRateRimit => 0x11,
