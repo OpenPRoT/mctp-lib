@@ -140,7 +140,7 @@ fn handle_set_endpoint_id<S: Sender>(
     let mut set_eid_resp = [0; 4];
     assert!(
         SetEndpointIdResponse::new(
-            CompletionCode::Error,
+            CompletionCode::Success,
             mctp_lib::mctp_control::EidAssignmentStatus::Accepted,
             mctp_lib::mctp_control::EidAllocationStatus::NoEidPoolUsed,
             eid,
