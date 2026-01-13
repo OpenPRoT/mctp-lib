@@ -1,0 +1,13 @@
+[package]
+name = "standalone"
+version = "0.1.0"
+edition = "2024"
+authors = ["OpenPRoT Contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/OpenPRoT/mctp-lib"
+description = "Standalone std implementation of mctp-lib"
+
+[dependencies]
+mctp-lib = { path = "../" }
+mctp = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features" }
+embedded-io-adapters = { version = "0.6.0", features = ["std"] }

@@ -14,8 +14,11 @@ categories = ["embedded", "no-std"]
 [dependencies]
 mctp-estack = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features", default-features = false, features = ["log"] }
 mctp = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features", default-features = false }
+zerocopy = {version = "0.8.17", features = ["derive"]}
 
 [dev-dependencies]
+mctp = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features" }
+standalone = { path = "standalone" }
 
 [package.metadata.docs.rs]
 all-features = true
