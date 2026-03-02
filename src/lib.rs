@@ -94,15 +94,20 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
     /// Provide an incoming packet to the router.
     ///
     /// This expects a single MCTP packet, without a transport binding header.
-    pub fn inbound(&mut self, pkt: &[u8]) -> Result<()> {
+    ///
+    /// Returns `Ok(Some(AppCookie))` for a associated listener or request,
+    /// or `Ok(None)` if the message was discarded.
+    pub fn inbound(&mut self, pkt: &[u8]) -> Result<Option<AppCookie>> {
         let own_eid = self.stack.eid();
         let Some(mut msg) = self.stack.receive(pkt)? else {
-            return Ok(());
+            return Ok(None);
         };
 
-        if msg.dest != own_eid {
-            // Drop messages if eid does not match (for now)
-            return Ok(());
+        if msg.dest != own_eid && msg.dest != Eid(0) {
+            // Drop messages if eid does not match (for now).
+            // EID 0 messages are used for physical addressing
+            // and will thus be processed.
+            return Ok(None);
         }
 
         match msg.tag {
@@ -113,7 +118,7 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
                         .is_some_and(|i| self.requests.get(i).is_some_and(|r| r.is_some()))
                 {
                     msg.retain();
-                    return Ok(());
+                    return Ok(Some(cookie));
                 }
                 // In this case an unowned message not associated with a request was received.
                 // This might happen if this endpoint was intended to route the packet to a different
@@ -124,16 +129,17 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
                 // check for matching listeners and retain with cookie
                 for i in 0..self.listeners.len() {
                     if self.listeners.get(i).ok_or(Error::InternalError)? == &Some(msg.typ) {
-                        msg.set_cookie(Some(Self::listener_cookie_from_index(i)));
+                        let cookie = Some(Self::listener_cookie_from_index(i));
+                        msg.set_cookie(cookie);
                         msg.retain();
-                        return Ok(());
+                        return Ok(cookie);
                     }
                 }
             }
         }
 
         // Return Ok(()) even if a message has been discarded
-        Ok(())
+        Ok(None)
     }
 
     /// Allocate a new request "_Handle_"
@@ -221,12 +227,14 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
             Some(cookie),
         )?;
 
-        self.sender.send_vectored(frag, bufs)
+        self.sender.send_vectored(eid, frag, bufs)
     }
 
     /// Receive a message associated with a [`AppCookie`]
     ///
     /// Returns `None` when no message is available for the listener/request.
+    ///
+    /// The message can be retained and received at a later point again (see [MctpMessage::retain()]).
     pub fn recv(&mut self, cookie: AppCookie) -> Option<mctp_estack::MctpMessage<'_>> {
         self.stack.get_deferred_bycookie(&[cookie])
     }
@@ -326,7 +334,8 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
 /// Implemented by a transport binding for sending packets.
 pub trait Sender {
     /// Send a packet fragmented by `fragmenter` with the payload `payload`
-    fn send_vectored(&mut self, fragmenter: Fragmenter, payload: &[&[u8]]) -> Result<Tag>;
+    fn send_vectored(&mut self, eid: Eid, fragmenter: Fragmenter, payload: &[&[u8]])
+    -> Result<Tag>;
     /// Get the MTU of a MCTP packet fragment (without transport headers)
     fn get_mtu(&self) -> usize;
 }
@@ -345,6 +354,7 @@ mod test {
     impl Sender for DoNothingSender {
         fn send_vectored(
             &mut self,
+            _eid: Eid,
             fragmenter: mctp_estack::fragment::Fragmenter,
             payload: &[&[u8]],
         ) -> core::result::Result<mctp::Tag, mctp::Error> {
@@ -364,6 +374,7 @@ mod test {
     impl<const MTU: usize> Sender for BufferSender<'_, MTU> {
         fn send_vectored(
             &mut self,
+            _eid: Eid,
             mut fragmenter: mctp_estack::fragment::Fragmenter,
             payload: &[&[u8]],
         ) -> core::result::Result<mctp::Tag, mctp::Error> {
