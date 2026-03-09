@@ -16,6 +16,9 @@
 //!
 //! It uses the [mctp-estack](https://docs.rs/mctp-estack/latest/mctp_estack/) and re-exports most
 //! parts of it.
+//!
+//! In addition it provides a codec for the _MCTP Control Protocol_.
+
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -27,7 +30,11 @@
 use mctp::{Eid, Error, MsgIC, MsgType, Result, Tag};
 
 use mctp_estack::fragment::Fragmenter;
-pub use mctp_estack::*;
+pub use mctp_estack::{
+    AppCookie, MctpMessage, Stack, TIMEOUT_INTERVAL, Vec, config, fragment, i2c, serial, usb,
+};
+
+pub mod mctp_control;
 
 #[derive(Debug)]
 struct ReqHandle {
