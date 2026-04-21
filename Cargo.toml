@@ -16,7 +16,7 @@ mctp-estack = { git = "https://github.com/CodeConstruct/mctp-rs.git", rev = "9e5
 mctp = { git = "https://github.com/CodeConstruct/mctp-rs.git", rev = "9e52b626863b916d900ca1ddfdd9215baf0f80fc" , default-features = false }
 
 [dev-dependencies]
-mctp = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features" }
+mctp = { git = "https://github.com/CodeConstruct/mctp-rs.git", rev = "9e52b626863b916d900ca1ddfdd9215baf0f80fc" }
 standalone = { path = "standalone" }
 
 [package.metadata.docs.rs]

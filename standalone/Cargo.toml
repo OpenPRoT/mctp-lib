@@ -9,5 +9,5 @@ description = "Standalone std implementation of mctp-lib"
 
 [dependencies]
 mctp-lib = { path = "../" }
-mctp = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features" }
+mctp = { git = "https://github.com/CodeConstruct/mctp-rs.git", rev = "9e52b626863b916d900ca1ddfdd9215baf0f80fc" }
 embedded-io-adapters = { version = "0.6.0", features = ["std"] }
