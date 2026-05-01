@@ -12,8 +12,8 @@ categories = ["embedded", "no-std"]
 [features]
 
 [dependencies]
-mctp-estack = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features", default-features = false, features = ["log"] }
-mctp = { git = "https://github.com/OpenPRoT/mctp-rs.git", branch = "sync-features", default-features = false }
+mctp-estack = { git = "https://github.com/CodeConstruct/mctp-rs.git", branch = "main", default-features = false, features = ["log"] }
+mctp = { git = "https://github.com/CodeConstruct/mctp-rs.git", branch = "main", default-features = false }
 
 [dev-dependencies]
 
