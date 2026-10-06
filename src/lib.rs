@@ -88,6 +88,17 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
 
     /// Update the stack
     ///
+    /// Call this when nothing else is happening but time has passed, e.g. to
+    /// expire a blocked receive call.
+    ///
+    /// The time-aware [`inbound_at`](Self::inbound_at),
+    /// [`send_at`](Self::send_at), and [`send_vectored_at`](Self::send_vectored_at)
+    /// advance the clock themselves.
+    ///
+    /// The legacy [`inbound`](Self::inbound), [`send`](Self::send), and
+    /// [`send_vectored`](Self::send_vectored) do not; callers of those legacy
+    /// methods must call `update` explicitly before handling events.
+    ///
     /// Returns an interval value in milliseconds in which the next call to `update()` should be
     /// issued.
     ///
@@ -100,11 +111,32 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
 
     /// Provide an incoming packet to the router.
     ///
+    /// Legacy API kept for compatibility. This does not advance the internal
+    /// clock; call [`update`](Self::update) first if you need this event to be
+    /// timestamped at the current time.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use inbound_at(now_millis, pkt); this legacy method requires a prior update(now_millis)"
+    )]
+    pub fn inbound(&mut self, pkt: &[u8]) -> Result<Option<AppCookie>> {
+        self.inbound_inner(pkt)
+    }
+
+    /// Provide an incoming packet to the router, timestamped at `now_millis`.
+    ///
     /// This expects a single MCTP packet, without a transport binding header.
+    /// `now_millis` is the current time; the packet is timestamped with it,
+    /// so a reassembly or flow this creates is dated now rather than at the
+    /// last call to [`update`](Self::update).
     ///
     /// Returns `Ok(Some(AppCookie))` for a associated listener or request,
     /// or `Ok(None)` if the message was discarded.
-    pub fn inbound(&mut self, pkt: &[u8]) -> Result<Option<AppCookie>> {
+    pub fn inbound_at(&mut self, now_millis: u64, pkt: &[u8]) -> Result<Option<AppCookie>> {
+        self.stack.update(now_millis)?;
+        self.inbound_inner(pkt)
+    }
+
+    fn inbound_inner(&mut self, pkt: &[u8]) -> Result<Option<AppCookie>> {
         let own_eid = self.stack.eid();
         let Some(mut msg) = self.stack.receive(pkt)? else {
             return Ok(None);
@@ -190,9 +222,13 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
 
     /// Send a message
     ///
-    /// When responding to a request received by a listener, `eid` and `tag` have to be set.
-    /// A request usually won't set an ` eid `.
-    /// When no `tag` is supplied for a request, a new one will be allocated.
+    /// Legacy API kept for compatibility. This does not advance the internal
+    /// clock; call [`update`](Self::update) first if you need the opened flow
+    /// timestamped at the current time.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use send_at(now_millis, ...); this legacy method requires a prior update(now_millis)"
+    )]
     pub fn send(
         &mut self,
         eid: Option<Eid>,
@@ -205,14 +241,71 @@ impl<S: Sender, const MAX_LISTENER_HANDLES: usize, const MAX_REQ_HANDLES: usize>
         self.send_vectored(eid, typ, tag, ic, cookie, &[buf])
     }
 
+    /// Send a message, timestamped at `now_millis`.
+    ///
+    /// When responding to a request received by a listener, `eid` and `tag` have to be set.
+    /// A request usually won't set an ` eid `.
+    /// When no `tag` is supplied for a request, a new one will be allocated.
+    /// `now_millis` is the current time; see [`send_vectored_at`](Self::send_vectored_at).
+    pub fn send_at(
+        &mut self,
+        now_millis: u64,
+        eid: Option<Eid>,
+        typ: MsgType,
+        tag: Option<Tag>,
+        ic: MsgIC,
+        cookie: AppCookie,
+        buf: &[u8],
+    ) -> Result<Tag> {
+        self.send_vectored_at(now_millis, eid, typ, tag, ic, cookie, &[buf])
+    }
+
     /// Send a vectored message
+    ///
+    /// Legacy API kept for compatibility. This does not advance the internal
+    /// clock; call [`update`](Self::update) first if you need the opened flow
+    /// timestamped at the current time.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use send_vectored_at(now_millis, ...); this legacy method requires a prior update(now_millis)"
+    )]
+    pub fn send_vectored(
+        &mut self,
+        eid: Option<Eid>,
+        typ: MsgType,
+        tag: Option<Tag>,
+        ic: MsgIC,
+        cookie: AppCookie,
+        bufs: &[&[u8]],
+    ) -> Result<Tag> {
+        self.send_vectored_inner(eid, typ, tag, ic, cookie, bufs)
+    }
+
+    /// Send a vectored message, timestamped at `now_millis`.
     ///
     /// When responding to a request received by a listener, `eid` and `tag` have to be set.
     /// A request usually won't set an `eid`.
     /// When no `tag` is supplied for a request, a new one will be allocated.
+    /// `now_millis` is the current time; the flow this opens is dated now
+    /// rather than at the last call to [`update`](Self::update), so it
+    /// cannot be expired before its reply is due.
     ///
     /// The `bufs` will be copied to a new buffer with `MAX_PAYLOAD` size.
-    pub fn send_vectored(
+    pub fn send_vectored_at(
+        &mut self,
+        now_millis: u64,
+        eid: Option<Eid>,
+        typ: MsgType,
+        tag: Option<Tag>,
+        ic: MsgIC,
+        cookie: AppCookie,
+        bufs: &[&[u8]],
+    ) -> Result<Tag> {
+        self.stack.update(now_millis)?;
+        self.send_vectored_inner(eid, typ, tag, ic, cookie, bufs)
+    }
+
+    fn send_vectored_inner(
         &mut self,
         eid: Option<Eid>,
         typ: MsgType,
@@ -464,7 +557,8 @@ mod test {
 
         let payload = [1; 300]; // 300 byte payload to exceed 255 byte MTU
         router_b
-            .send(
+            .send_at(
+                0,
                 None,
                 mctp::MsgType(0),
                 None,
@@ -476,7 +570,7 @@ mod test {
 
         let packets = buf_out_b.borrow();
         for pkt in packets.as_slice() {
-            router_a.inbound(pkt).unwrap();
+            router_a.inbound_at(0, pkt).unwrap();
         }
 
         let message = router_a.recv(listener).unwrap();
@@ -495,7 +589,8 @@ mod test {
         );
 
         router_a
-            .send(
+            .send_at(
+                0,
                 Some(msg_source),
                 msg_typ,
                 Some(super::Tag::Unowned(msg_tag.tag())),
@@ -507,7 +602,7 @@ mod test {
 
         let packets = buf_out_a.borrow();
         for pkt in packets.as_slice() {
-            router_b.inbound(pkt).unwrap();
+            router_b.inbound_at(0, pkt).unwrap();
         }
 
         let message = router_b.recv(requester).unwrap();
@@ -518,6 +613,148 @@ mod test {
         assert!(
             !message.tag.is_owner(),
             "Received message is not a response (tag is unowned)"
+        );
+    }
+
+    /// A flow opened by `send` must be dated at the `now_millis` given to
+    /// that call, not at whatever time a previous call last set — otherwise
+    /// a `send` that is itself the first activity after a long quiet period
+    /// opens a flow that looks old the moment the clock is next advanced,
+    /// and the reply that arrives moments later finds no flow to match.
+    #[test]
+    fn response_to_a_request_sent_after_a_quiet_period_is_delivered() {
+        const REQ_HANDLES: usize = 8;
+        const LISTENER_HANDLES: usize = 8;
+        // mctp-estack expires a flow/reassembly 6000 ms after its timestamp.
+        const REASSEMBLY_EXPIRY_TIMEOUT_MILLIS: u64 = 6_000;
+
+        let buf_out_a = RefCell::new(Vec::new());
+        let outbound_a: BufferSender<255> = BufferSender {
+            packets: &buf_out_a,
+        };
+        let mut router_a: Router<_, LISTENER_HANDLES, REQ_HANDLES> =
+            Router::new(Eid(42), 0, outbound_a);
+        let buf_out_b = RefCell::new(Vec::new());
+        let outbound_b: BufferSender<255> = BufferSender {
+            packets: &buf_out_b,
+        };
+        let mut router_b: Router<_, LISTENER_HANDLES, REQ_HANDLES> =
+            Router::new(Eid(112), 0, outbound_b);
+
+        let listener = router_a.listener(mctp::MsgType(0)).unwrap();
+        let requester = router_b.req(Eid(42)).unwrap();
+
+        // Both routers are idle (no `update`/`inbound`/`send` at all) for
+        // longer than the expiry timeout. The request below is the first
+        // activity on either router since they were created at time 0.
+        let quiet_until = REASSEMBLY_EXPIRY_TIMEOUT_MILLIS + 1_000;
+        router_b
+            .send_at(
+                quiet_until,
+                None,
+                mctp::MsgType(0),
+                None,
+                mctp::MsgIC(false),
+                requester,
+                b"hello",
+            )
+            .unwrap();
+
+        // A periodic housekeeping `update`, as a real caller would run on a
+        // timer, lands shortly after. With a flow mis-stamped at the stale
+        // time 0 this would see `quiet_until - 0 > 6000` and expire it
+        // immediately; stamped correctly at `quiet_until`, it must not.
+        router_b.update(quiet_until + 50).unwrap();
+
+        for pkt in buf_out_b.borrow().as_slice() {
+            router_a.inbound_at(quiet_until + 100, pkt).unwrap();
+        }
+        let message = router_a.recv(listener).unwrap();
+        let (msg_source, msg_typ, msg_tag) = (message.source, message.typ, message.tag);
+        drop(message);
+
+        router_a
+            .send_at(
+                quiet_until + 100,
+                Some(msg_source),
+                msg_typ,
+                Some(super::Tag::Unowned(msg_tag.tag())),
+                mctp::MsgIC(false),
+                listener,
+                b"hi",
+            )
+            .unwrap();
+
+        for pkt in buf_out_a.borrow().as_slice() {
+            router_b.inbound_at(quiet_until + 150, pkt).unwrap();
+        }
+        router_b
+            .recv(requester)
+            .expect("response was dropped as a stale flow");
+    }
+
+    /// A reassembly started by `inbound` must be dated at the `now_millis`
+    /// given to that call, not at whatever time a previous call last set —
+    /// otherwise the first fragment of a message that itself arrives after a
+    /// long quiet period looks old the moment the clock is next advanced,
+    /// and later fragments have nothing to join.
+    #[test]
+    fn fragments_in_separate_events_after_a_quiet_period_are_reassembled() {
+        const REQ_HANDLES: usize = 8;
+        const LISTENER_HANDLES: usize = 8;
+        const REASSEMBLY_EXPIRY_TIMEOUT_MILLIS: u64 = 6_000;
+
+        let buf_out_a = RefCell::new(Vec::new());
+        let outbound_a: BufferSender<255> = BufferSender {
+            packets: &buf_out_a,
+        };
+        let mut router_a: Router<_, LISTENER_HANDLES, REQ_HANDLES> =
+            Router::new(Eid(42), 0, outbound_a);
+        let buf_out_b = RefCell::new(Vec::new());
+        let outbound_b: BufferSender<255> = BufferSender {
+            packets: &buf_out_b,
+        };
+        let mut router_b: Router<_, LISTENER_HANDLES, REQ_HANDLES> =
+            Router::new(Eid(112), 0, outbound_b);
+
+        let listener = router_a.listener(mctp::MsgType(0)).unwrap();
+        let requester = router_b.req(Eid(42)).unwrap();
+
+        let payload = [1; 300]; // 300 byte payload to exceed 255 byte MTU: at least 2 fragments
+        router_b
+            .send_at(
+                0,
+                None,
+                mctp::MsgType(0),
+                None,
+                mctp::MsgIC(false),
+                requester,
+                &payload,
+            )
+            .unwrap();
+        let packets = buf_out_b.borrow();
+        let mut packets = packets.iter();
+        let first = packets.next().expect("expected at least 2 fragments");
+
+        // router_a is untouched since creation at time 0. The first fragment
+        // is the first activity on it, arriving after a long quiet period.
+        let quiet_until = REASSEMBLY_EXPIRY_TIMEOUT_MILLIS + 1_000;
+        router_a.inbound_at(quiet_until, first).unwrap();
+
+        // The remaining fragments of the same message follow shortly after,
+        // as they would over a real transport. With a reassembly mis-stamped
+        // at the stale time 0 this would see `quiet_until - 0 > 6000` and
+        // expire it before the next fragment can join it.
+        for pkt in packets {
+            router_a.inbound_at(quiet_until + 50, pkt).unwrap();
+        }
+
+        let message = router_a
+            .recv(listener)
+            .expect("reassembly was dropped as stale");
+        assert_eq!(
+            message.payload, &payload,
+            "Received payload does not match send payload"
         );
     }
 }

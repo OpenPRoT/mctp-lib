@@ -49,6 +49,7 @@ pub struct Request<S: Sender> {
     notifier: Arc<Condvar>,
     timeout: Option<Duration>,
     tag: Option<Tag>,
+    start_time: Instant,
 }
 /// A listener implementing [Listener]
 #[derive(Debug)]
@@ -58,6 +59,7 @@ pub struct ReqListener<S: Sender> {
     cookie: AppCookie,
     notifier: Arc<Condvar>,
     timeout: Option<Duration>,
+    start_time: Instant,
 }
 /// A response for a request received by a [ReqListener]
 #[derive(Debug)]
@@ -67,6 +69,7 @@ pub struct Response<S: Sender> {
     tag: Tag,
     typ: MsgType,
     remote_eid: Eid,
+    start_time: Instant,
 }
 
 impl<S: Sender> Stack<S> {
@@ -93,6 +96,7 @@ impl<S: Sender> Stack<S> {
             notifier,
             timeout,
             tag: None,
+            start_time: self.start_time,
         })
     }
     pub fn listener(
@@ -114,15 +118,17 @@ impl<S: Sender> Stack<S> {
             notifier,
             timeout,
             notifiers: Arc::clone(&self.notifiers),
+            start_time: self.start_time,
         })
     }
 
     pub fn inbound(&mut self, pkt: &[u8]) -> Result<(), Error> {
+        let now_millis = Instant::now().duration_since(self.start_time).as_millis() as u64;
         let cookie = self
             .inner
             .lock()
             .map_err(|_| Error::InternalError)?
-            .inbound(pkt)?;
+            .inbound_at(now_millis, pkt)?;
         if let Some(handle) = cookie {
             let notifiers = self.notifiers.lock().map_err(|_| Error::InternalError)?;
             let notifier = notifiers.get(&handle);
@@ -167,11 +173,12 @@ impl<S: Sender> ReqChannel for Request<S> {
         integrity_check: mctp::MsgIC,
         bufs: &[&[u8]],
     ) -> mctp::Result<()> {
+        let now_millis = Instant::now().duration_since(self.start_time).as_millis() as u64;
         let tag = self
             .stack
             .lock()
             .map_err(|_| Error::InternalError)?
-            .send_vectored(None, typ, None, integrity_check, self.cookie, bufs)?;
+            .send_vectored_at(now_millis, None, typ, None, integrity_check, self.cookie, bufs)?;
         self.tag = Some(tag);
         Ok(())
     }
@@ -236,6 +243,7 @@ impl<S: Sender> Listener for ReqListener<S> {
                     remote_eid: msg.source,
                     typ: msg.typ,
                     notifiers: Arc::clone(&self.notifiers),
+                    start_time: self.start_time,
                 };
                 return Ok((msg.typ, msg.ic, &mut buf[..msg.payload.len()], resp));
             }
@@ -258,10 +266,12 @@ impl<S: Sender> RespChannel for Response<S> {
     type ReqChannel = Request<S>;
 
     fn send_vectored(&mut self, integrity_check: MsgIC, bufs: &[&[u8]]) -> mctp::Result<()> {
+        let now_millis = Instant::now().duration_since(self.start_time).as_millis() as u64;
         self.stack
             .lock()
             .map_err(|_| Error::InternalError)?
-            .send_vectored(
+            .send_vectored_at(
+                now_millis,
                 Some(self.remote_eid),
                 self.typ,
                 Some(self.tag),
@@ -291,6 +301,7 @@ impl<S: Sender> RespChannel for Response<S> {
             notifier,
             timeout: None,
             tag: None,
+            start_time: self.start_time,
         })
     }
 }
