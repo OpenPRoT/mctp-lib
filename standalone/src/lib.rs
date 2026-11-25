@@ -178,7 +178,15 @@ impl<S: Sender> ReqChannel for Request<S> {
             .stack
             .lock()
             .map_err(|_| Error::InternalError)?
-            .send_vectored_at(now_millis, None, typ, None, integrity_check, self.cookie, bufs)?;
+            .send_vectored_at(
+                now_millis,
+                None,
+                typ,
+                None,
+                integrity_check,
+                self.cookie,
+                bufs,
+            )?;
         self.tag = Some(tag);
         Ok(())
     }
