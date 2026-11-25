@@ -1042,12 +1042,12 @@ impl<'a> GetMCTPVersionSupportResponse<'a> {
     ///
     /// Returns None for malformed chunks that are not exactly 4 bytes.
     pub fn get_version_code_iter(&self) -> impl Iterator<Item = Option<u32>> + '_ {
-        self.version_codes.chunks_exact(4).map(|chunk| {
-            chunk
-                .try_into()
-                .ok()
-                .map(|bytes: [u8; 4]| u32::from_be_bytes(bytes))
-        })
+        // Any trailing bytes that do not fill a whole 4-byte chunk are ignored.
+        self.version_codes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| Some(u32::from_be_bytes(*chunk)))
     }
 
     /// Gets the version code at the specified position.
@@ -1055,14 +1055,10 @@ impl<'a> GetMCTPVersionSupportResponse<'a> {
     /// Returns None if the position is invalid or if the version codes data is malformed.
     pub fn get_version_code_at(&self, pos: usize) -> Option<u32> {
         self.version_codes
-            .chunks_exact(4)
-            .nth(pos)
-            .and_then(|chunk| {
-                chunk
-                    .try_into()
-                    .ok()
-                    .map(|bytes: [u8; 4]| u32::from_be_bytes(bytes))
-            })
+            .as_chunks::<4>()
+            .0
+            .get(pos)
+            .map(|chunk| u32::from_be_bytes(*chunk))
     }
 }
 
@@ -1718,6 +1714,25 @@ mod tests {
         assert_eq!(response.completion_code, CompletionCode::Success);
         assert_eq!(response.version_count, 2);
         assert_eq!(response.version_codes, version_codes);
+    }
+
+    #[test]
+    fn test_get_mctp_version_support_response_version_code_accessors() {
+        // Big-endian version codes, followed by 2 trailing bytes that do not
+        // form a whole 4-byte entry and must be ignored.
+        let version_codes = &[0xF1, 0xF0, 0xFF, 0x00, 0xF1, 0xF1, 0xFF, 0x00, 0xAA, 0xBB];
+        let response = GetMCTPVersionSupportResponse::new(CompletionCode::Success, version_codes);
+
+        let codes: Vec<Option<u32>> = response.get_version_code_iter().collect();
+        assert_eq!(codes, [Some(0xF1F0_FF00), Some(0xF1F1_FF00)]);
+
+        assert_eq!(response.get_version_code_at(0), Some(0xF1F0_FF00));
+        assert_eq!(response.get_version_code_at(1), Some(0xF1F1_FF00));
+        assert_eq!(response.get_version_code_at(2), None);
+
+        let empty = GetMCTPVersionSupportResponse::new(CompletionCode::Success, &[]);
+        assert_eq!(empty.get_version_code_iter().count(), 0);
+        assert_eq!(empty.get_version_code_at(0), None);
     }
 
     #[test]
